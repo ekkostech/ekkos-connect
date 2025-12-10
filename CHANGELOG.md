@@ -5,6 +5,38 @@ All notable changes to the ekkOS Connect extension will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2025-12-09
+
+### Fixed
+- **Windsurf MCP Config**: Fixed incorrect path - now uses `~/.codeium/windsurf/mcp_config.json` instead of `~/.windsurf/mcp.json`
+
+## [1.8.4] - 2025-12-09
+
+### Changed
+- **New Logo**: Updated extension icon to new ekkOS_ branded logo
+
+## [1.8.3] - 2025-12-09
+
+### Changed
+- **Branding**: Updated to "ekkOS_Connect" (with underscore) throughout extension and README
+- **Public Repo**: Issues now link to https://github.com/ekkostech/ekkos-connect
+
+## [1.8.2] - 2025-12-09
+
+### Fixed
+- **Hook Paths**: Fixed project and global hooks to use absolute paths instead of relative paths (prevents "No such file or directory" errors)
+
+## [1.8.1] - 2025-12-09
+
+### Fixed
+- **README Version**: Updated README to reflect current version and features
+
+## [1.8.0] - 2025-12-09
+
+### Added
+- **Open VSX Publishing**: Extension now available on Open VSX Registry for Cursor users
+- **Public GitHub Repo**: Source code now available at https://github.com/ekkostech/ekkos-connect
+
 ## [1.7.5] - 2025-01-27
 
 ### Fixed
@@ -130,6 +162,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **1.8.5** - Fixed Windsurf MCP config path
+- **1.8.4** - New ekkOS_ branded logo
+- **1.8.3** - "ekkOS_Connect" branding update
+- **1.8.2** - Fixed hook paths to use absolute paths
+- **1.8.1** - README version sync
+- **1.8.0** - Open VSX + public GitHub repo
 - **1.7.0** - Universal AI Gateway with diagnostics dashboard
 - **1.6.0** - API key display and connection status badges
 - **1.3.2** - Fixed activity API endpoint architecture

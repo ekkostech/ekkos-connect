@@ -2,7 +2,7 @@
   "name": "ekkos-connect",
   "displayName": "ekkOS_™ - Universal AI Memory Gateway",
   "description": "Universal AI Memory Gateway - One-click setup for persistent memory across Cursor, Claude Code, VS Code, Windsurf, Codex with real-time diagnostics",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "publisher": "ekkostech",
   "repository": {
     "type": "git",

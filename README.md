@@ -2,7 +2,7 @@
 
 One-click setup for ekkOS_ memory system across all AI IDEs.
 
-**Version**: 1.8.4 | [Changelog](./CHANGELOG.md)
+**Version**: 1.8.5 | [Changelog](./CHANGELOG.md)
 
 ## Features
 

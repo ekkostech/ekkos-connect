@@ -819,8 +819,8 @@ function getIdeConfigs(): IDEConfig[] {
     deployed: false
   });
 
-  // Windsurf
-  const windsurfConfig = path.join(homeDir, '.windsurf', 'mcp.json');
+  // Windsurf (uses ~/.codeium/windsurf/mcp_config.json)
+  const windsurfConfig = path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json');
   configs.push({
     name: 'Windsurf',
     configPath: windsurfConfig,

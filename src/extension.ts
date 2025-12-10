@@ -692,7 +692,6 @@ async function startAuth(context: vscode.ExtensionContext, selectedIde?: string)
   // After login, user will be redirected to extension auth endpoint which handles the callback
   const loginUrl = `${PLATFORM_URL}/login?returnTo=${encodeURIComponent(`/api/auth/extension?state=${state}&redirect=${encodeURIComponent(redirectUri)}`)}`;
 
-  vscode.window.showInformationMessage(`Opening platform login (${uriScheme})...`);
   await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
 }
 
@@ -765,6 +764,78 @@ async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionCont
   const autoDeployEnabled = vscode.workspace.getConfiguration('ekkos').get('autoDeployMcp', true);
   if (autoDeployEnabled) {
     await deployMcpConfig();
+  }
+}
+
+async function handleManualApiKey(apiKey: string, context: vscode.ExtensionContext) {
+  if (!apiKey || !apiKey.startsWith('ekk_') || apiKey.length < 20) {
+    vscode.window.showErrorMessage('Invalid API key format. API keys should start with ekk_ and be at least 20 characters.');
+    return;
+  }
+
+  try {
+    // Validate the API key by calling the API
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(`${API_URL}/api/v1/me`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        vscode.window.showErrorMessage('Invalid API key. Please check your key and try again.');
+      } else {
+        vscode.window.showErrorMessage(`API validation failed: ${response.status}`);
+      }
+      return;
+    }
+
+    const data = await response.json() as { user?: { id: string; email: string; tier?: string } };
+
+    if (!data.user?.id || !data.user?.email) {
+      vscode.window.showErrorMessage('Could not retrieve user information. Please try again.');
+      return;
+    }
+
+    // Save config
+    const config: EkkosConfig = {
+      userId: data.user.id,
+      email: data.user.email,
+      token: 'manual-entry', // No OAuth token for manual entry
+      apiKey,
+      tier: (data.user.tier as 'free' | 'pro' | 'enterprise') || 'free',
+      createdAt: new Date().toISOString()
+    };
+    saveConfig(config);
+
+    vscode.window.showInformationMessage(
+      `Successfully connected as ${data.user.email}!`,
+      'Deploy MCP Config'
+    ).then(selection => {
+      if (selection === 'Deploy MCP Config') {
+        deployMcpConfig();
+      }
+    });
+
+    // Auto-deploy MCP if enabled
+    const autoDeployEnabled = vscode.workspace.getConfiguration('ekkos').get('autoDeployMcp', true);
+    if (autoDeployEnabled) {
+      await deployMcpConfig();
+    }
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      vscode.window.showErrorMessage('API validation timed out. Please check your connection.');
+    } else {
+      vscode.window.showErrorMessage('Failed to validate API key: ' + e.message);
+    }
   }
 }
 
@@ -1208,7 +1279,6 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         case 'openPlatform':
           // Open platform login page directly (supports Google OAuth)
           vscode.env.openExternal(vscode.Uri.parse(`${PLATFORM_URL}/login`));
-          vscode.window.showInformationMessage('After logging in, use "Connect Account" to link your extension');
           break;
         case 'openDocs':
           vscode.env.openExternal(vscode.Uri.parse('https://docs.ekkos.dev'));
@@ -1224,13 +1294,15 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           break;
         case 'checkConnections':
           checkIdeConnections();
-          vscode.window.showInformationMessage('Checking connections...');
           break;
         case 'runDiagnostics':
           checkSetupStatus().then(status => {
             sidebarProvider?.refresh();
             vscode.window.showInformationMessage(`Setup Score: ${status.setupScore}% - API: ${status.apiConnection.status}${status.apiConnection.latency ? ` (${status.apiConnection.latency}ms)` : ''}`);
           });
+          break;
+        case 'manualApiKey':
+          handleManualApiKey(message.apiKey, this._context);
           break;
       }
     });
@@ -1673,6 +1745,17 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <p class="hint">
             Or <a href="https://platform.ekkos.dev/signup">create a free account →</a>
           </p>
+        </div>
+
+        <div class="manual-apikey-section">
+          <div class="divider-with-text">
+            <span>or enter API key manually</span>
+          </div>
+          <div class="apikey-input-group">
+            <input type="text" id="manualApiKey" placeholder="ekk_xxxxxxxx_xxxxx..." class="apikey-input" />
+            <button class="btn btn-secondary" onclick="submitApiKey()">Connect</button>
+          </div>
+          <p class="hint apikey-hint">Get your API key from <a href="https://platform.ekkos.dev/dashboard/settings?tab=api-keys" target="_blank">platform settings</a></p>
         </div>
       </div>
     `;
@@ -2552,6 +2635,58 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       margin-top: 20px;
       text-align: center;
     }
+
+    /* Manual API Key Entry */
+    .manual-apikey-section {
+      margin-top: 24px;
+      padding-top: 16px;
+    }
+    .divider-with-text {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .divider-with-text::before,
+    .divider-with-text::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid var(--vscode-widget-border);
+    }
+    .divider-with-text span {
+      padding: 0 12px;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .apikey-input-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .apikey-input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .apikey-input:focus {
+      outline: none;
+      border-color: #8b5cf6;
+      box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
+    }
+    .apikey-input::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+    .apikey-hint {
+      text-align: center;
+      margin-top: 8px;
+    }
   </style>
 </head>
 <body>
@@ -2579,6 +2714,19 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     }
     function checkConnections() { vscode.postMessage({ command: 'checkConnections' }); }
     function runDiagnostics() { vscode.postMessage({ command: 'runDiagnostics' }); }
+    function submitApiKey() {
+      const input = document.getElementById('manualApiKey');
+      const apiKey = input ? input.value.trim() : '';
+      if (!apiKey) {
+        vscode.postMessage({ command: 'showMessage', text: 'Please enter an API key' });
+        return;
+      }
+      if (!apiKey.startsWith('ekk_')) {
+        vscode.postMessage({ command: 'showMessage', text: 'Invalid API key format. Should start with ekk_' });
+        return;
+      }
+      vscode.postMessage({ command: 'manualApiKey', apiKey });
+    }
   </script>
   <!-- SVG Gradient Definition -->
   <svg style="width: 0; height: 0; position: absolute;">

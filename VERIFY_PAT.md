@@ -143,3 +143,5 @@ VSCE_PAT="new-pat-here" npx @vscode/vsce publish --pat "$VSCE_PAT"
 
 
 
+
+

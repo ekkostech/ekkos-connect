@@ -1,0 +1,142 @@
+{
+  "name": "ekkos-connect",
+  "displayName": "ekkOS_™ - Universal AI Memory Gateway",
+  "description": "Universal AI Memory Gateway - One-click setup for persistent memory across Cursor, Claude Code, VS Code, Windsurf, Codex with real-time diagnostics",
+  "version": "1.8.3",
+  "publisher": "ekkostech",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ekkos-ai/ekkos"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "icon": "resources/icon.png",
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "ekkos",
+    "memory",
+    "ai",
+    "mcp",
+    "cursor",
+    "claude",
+    "windsurf",
+    "codex",
+    "openai"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onUri"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ekkos",
+          "title": "ekkOS",
+          "icon": "resources/ekkos-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ekkos": [
+        {
+          "type": "webview",
+          "id": "ekkosConnect",
+          "name": "Connect"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ekkos.connect",
+        "title": "ekkOS: Connect Account"
+      },
+      {
+        "command": "ekkos.openSidebar",
+        "title": "ekkOS: Open Sidebar"
+      },
+      {
+        "command": "ekkos.disconnect",
+        "title": "ekkOS: Disconnect Account"
+      },
+      {
+        "command": "ekkos.deployMcp",
+        "title": "ekkOS: Deploy MCP Config to All IDEs"
+      },
+      {
+        "command": "ekkos.deployInstructions",
+        "title": "ekkOS: Deploy AI Instructions to Project"
+      },
+      {
+        "command": "ekkos.openDashboard",
+        "title": "ekkOS: Open Dashboard"
+      },
+      {
+        "command": "ekkos.refreshStatus",
+        "title": "ekkOS: Refresh Status"
+      },
+      {
+        "command": "ekkos.setupRules",
+        "title": "ekkOS: Setup Rules for Current Project",
+        "icon": "$(file-add)"
+      },
+      {
+        "command": "ekkos.setupGlobal",
+        "title": "ekkOS: Setup Global Hooks (One-Time, All Projects)",
+        "icon": "$(globe)"
+      }
+    ],
+    "configuration": {
+      "title": "ekkOS Connect",
+      "properties": {
+        "ekkos.apiUrl": {
+          "type": "string",
+          "default": "https://mcp.ekkos.dev",
+          "description": "ekkOS API URL"
+        },
+        "ekkos.platformUrl": {
+          "type": "string",
+          "default": "https://platform.ekkos.dev",
+          "description": "ekkOS Platform URL"
+        },
+        "ekkos.autoDeployMcp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically deploy MCP config after authentication"
+        },
+        "ekkos.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show ekkOS status in status bar"
+        },
+        "ekkos.autoSetup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically set up ekkOS rules when opening new workspaces"
+        }
+      }
+    },
+    "uriHandler": {
+      "ekkos-connect": {
+        "pattern": "cursor://ekkos.ekkos-connect/callback"
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.0.0"
+  }
+}

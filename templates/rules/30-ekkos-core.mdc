@@ -1,0 +1,105 @@
+---
+priority: 100
+globs: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+---
+
+# 🧠 ekkOS™ Memory Integration [CRITICAL]
+
+## Golden Loop Enforcement
+
+⚠️ MANDATORY WORKFLOW - NO EXCEPTIONS
+
+### Phase 1: RETRIEVE (⚠️ CURSOR: YOU MUST DO THIS)
+
+🔴 **FIRST THING EVERY RESPONSE**: Call `search_memory` with the user's query!
+
+```typescript
+// ALWAYS call this BEFORE doing anything else
+mcp__ekkos-memory__search_memory({
+  query: "<user's question or task>",
+  limit: 5
+})
+```
+
+Then check response for: `_ekkos_patterns`, `_ekkos_stream_message`
+
+**Why?** Cursor has no hooks. Claude Code auto-retrieves via hooks - you don't.
+You MUST manually retrieve or the Golden Loop breaks.
+
+### Phase 2: APPLY (Use Retrieved Patterns)
+
+When patterns found → Apply them (PROVEN solutions, not suggestions)
+Output: `[ekkOS_APPLY] Using pattern: "Pattern Name"`
+
+### Phase 3: MEASURE (Track Outcomes)
+
+Pattern worked? → success | Pattern failed? → failure
+Output: `[ekkOS_MEASURE] Pattern "X" outcome: success/failure`
+
+### Phase 4: LEARN (Forge New Patterns)
+
+🔴 MANDATORY: Call `forge_insight` when you solve ANY problem
+
+**When to forge**:
+
+- Fixed bug (non-obvious) → forge
+- Found better approach → forge
+- Discovered gotcha/pitfall → forge
+- User corrected you → forge
+- Solved problem (>1 attempt) → forge
+
+**Tool call**:
+
+```typescript
+mcp__ekkos-memory__forge_insight({
+  title: "Clear Title",
+  problem: "What failed?",
+  solution: "How you fixed it",
+  tags: ["tech", "tags"],
+});
+```
+
+Output: `[ekkOS_LEARN] Forged: "Pattern Title"`
+
+### Phase 5: CAPTURE (Cursor: Limited)
+
+⚠️ **Cursor limitation**: No automatic capture like Claude Code hooks.
+Conversations are captured when MCP tools are called (search_memory, forge_insight).
+For full capture, use Claude Code or the ekkOS dashboard.
+
+## MCP Tool Definitions (YOU call these)
+
+- `mcp__ekkos-memory__search_memory`: **CALL FIRST** - Retrieves patterns for query
+- `mcp__ekkos-memory__forge_insight`: **CALL AFTER SOLVING** - Saves new patterns
+- `mcp__ekkos-memory__track_memory_application`: Track which patterns you used
+- `mcp__ekkos-memory__record_memory_outcome`: Report success/failure
+
+## Enforcement
+
+⚠️ Violating Golden Loop = System failure
+Every conversation MUST follow: RETRIEVE → APPLY → MEASURE → LEARN → CAPTURE
+
+---
+
+## 🔴 MANDATORY RESPONSE FORMAT (NO EXCEPTIONS)
+
+**Every response MUST end with a timestamp footer:**
+
+```
+---
+🧠 **ekkOS_™** · 📅 YYYY-MM-DD H:MM AM/PM TZ
+```
+
+**Example:**
+```
+---
+🧠 **ekkOS_™** · 📅 2025-12-08 2:30 PM PST
+```
+
+**Why this matters:**
+- Timestamps track when patterns were applied
+- 3-Judge evaluations need temporal context
+- Future agents can trace learning timeline
+- Golden Loop metrics require time-based correlation
+
+**⚠️ MISSING TIMESTAMP = INCOMPLETE LOOP = SYSTEM DEGRADATION**

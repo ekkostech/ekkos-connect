@@ -1,0 +1,89 @@
+---
+priority: 100
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# 🔒 Cursor Hooks Contract
+
+⚠️ **MANDATORY**: Hooks run automatically - you don't call them manually
+
+## Hook Architecture
+
+**Dumb Hooks, Smart Backend** - Hooks just capture data, backend does analysis
+
+### user-prompt-submit.sh (Runs BEFORE Response)
+
+**Triggers**: When user sends a message
+**Does**:
+
+- Captures start time
+- Retrieves patterns from MCP gateway (automatic)
+- Displays patterns to user
+- Saves patterns to `.cursor/state/` for badge
+
+**You see**:
+
+```
+🧠 ekkOS™_Retrieving [18ms]
+✓ 3 patterns loaded from memory
+```
+
+### stop.sh (Runs AFTER Response)
+
+**Triggers**: When your response completes
+**Does**:
+
+- Captures conversation to memory API
+- Generates badge with metrics
+- Triggers async analysis (pattern detection, success judgment)
+- Displays badge at end
+
+**You see**:
+
+```
+[ekkOS_CAPTURE] ✓ Saved (ID: abc123...)
+[reflex:uuid] badge
+```
+
+## What You Do
+
+**✅ DO**:
+
+- Display `_ekkos_stream_message` when present in tool responses
+- Call `forge_insight` when solving problems
+- Show ekkOS branded messages
+
+**❌ DON'T**:
+
+- Manually call capture scripts (hooks do this)
+- Generate badges yourself (hooks do this)
+- Worry about pattern retrieval (MCP gateway does this)
+
+## Hook Flow
+
+```
+User sends message
+    ↓
+user-prompt-submit.sh runs
+    ↓
+Patterns retrieved and displayed
+    ↓
+You respond (using patterns)
+    ↓
+stop.sh runs
+    ↓
+Conversation captured + badge generated
+```
+
+## Trust the Hooks
+
+Hooks are:
+
+- ✅ Fully portable (POSIX-compliant)
+- ✅ Bulletproof (fallbacks for missing tools)
+- ✅ Fast (non-blocking, cloud-first)
+- ✅ Automatic (you never call them)
+
+**Your job**: Use the patterns hooks provide, forge insights when you solve problems
+

@@ -98,28 +98,77 @@ if [ -f "$PATTERNS_FILE" ]; then
   MODEL_USED=$(echo "$STORED_DATA" | jq -r '.model_used // "claude-sonnet-4-5"' 2>/dev/null || echo "claude-sonnet-4-5")
   TASK_ID=$(echo "$STORED_DATA" | jq -r '.task_id // ""' 2>/dev/null || echo "")
 
-  # PATTERN APPLICATION DETECTION: Handled by backend
-  # The backend uses semantic similarity analysis to determine which patterns
-  # were actually applied, avoiding false positives from simple keyword matching.
-  # We send patterns_retrieved and the full conversation to the capture endpoint,
-  # which triggers async analysis with proper NLP/embedding comparison.
-  #
-  # Explicit apply markers from AI response (e.g., "[ekkOS_APPLY] Using: Pattern")
-  # are detected separately below in the forge marker detection section.
+  # PATTERN ACKNOWLEDGMENT DETECTION (PatternGuard)
+  # 1. [ekkOS_SELECT] - patterns that were applied (preferred)
+  # 2. [ekkOS_SKIP] - patterns explicitly skipped (new)
+  # 3. [ekkOS_APPLY] - legacy marker (fallback)
+  # Coverage = (applied + skipped) / total retrieved
   if [ -n "$LAST_ASSISTANT" ] && [ "$PATTERN_COUNT" -gt 0 ]; then
-    # Check for explicit [ekkOS_APPLY] markers in the response
     APPLIED_IDS=""
-    for pattern in $(echo "$PATTERNS" | jq -c '.[]'); do
-      TITLE=$(echo "$pattern" | jq -r '.title // ""')
-      PID=$(echo "$pattern" | jq -r '.id // .pattern_id // ""')
+    SKIPPED_IDS=""
 
-      # Only count as applied if AI explicitly marked it with [ekkOS_APPLY]
-      if echo "$LAST_ASSISTANT" | grep -qF "[ekkOS_APPLY]" && echo "$LAST_ASSISTANT" | grep -qF "$TITLE"; then
-        APPLIED_IDS="${APPLIED_IDS}${PID},"
-        echo "[ekkOS_APPLY_DETECTED] Pattern: \"$TITLE\"" >&2
+    # Check for structured [ekkOS_SELECT] block (applied patterns)
+    SELECT_BLOCK=$(echo "$LAST_ASSISTANT" | grep -ozP '\[ekkOS_SELECT\][\s\S]*?\[/ekkOS_SELECT\]' 2>/dev/null | tr '\0' '\n' || true)
+
+    if [ -n "$SELECT_BLOCK" ]; then
+      # Extract pattern IDs from YAML-like format: "- id: <uuid>"
+      SELECTED_IDS=$(echo "$SELECT_BLOCK" | grep -oE 'id:\s*[a-f0-9-]+' | sed 's/id:\s*//' || true)
+
+      for pid in $SELECTED_IDS; do
+        # Validate it's a real UUID (or short ID)
+        if [ -n "$pid" ] && [ ${#pid} -ge 8 ]; then
+          APPLIED_IDS="${APPLIED_IDS}${pid},"
+          echo "[ekkOS_SELECT] Applied: ${pid:0:8}..." >&2
+        fi
+      done
+    fi
+
+    # NEW: Check for [ekkOS_SKIP] block (skipped patterns with reason)
+    SKIP_BLOCK=$(echo "$LAST_ASSISTANT" | grep -ozP '\[ekkOS_SKIP\][\s\S]*?\[/ekkOS_SKIP\]' 2>/dev/null | tr '\0' '\n' || true)
+
+    if [ -n "$SKIP_BLOCK" ]; then
+      # Extract skipped pattern IDs
+      SKIP_IDS=$(echo "$SKIP_BLOCK" | grep -oE 'id:\s*[a-f0-9-]+' | sed 's/id:\s*//' || true)
+
+      for pid in $SKIP_IDS; do
+        if [ -n "$pid" ] && [ ${#pid} -ge 8 ]; then
+          SKIPPED_IDS="${SKIPPED_IDS}${pid},"
+          echo "[ekkOS_SKIP] Skipped: ${pid:0:8}..." >&2
+        fi
+      done
+    fi
+
+    # Calculate coverage (PatternGuard metric)
+    TOTAL_RETRIEVED=$PATTERN_COUNT
+    APPLIED_COUNT=$(echo "$APPLIED_IDS" | tr ',' '\n' | grep -c '.' || echo 0)
+    SKIPPED_COUNT=$(echo "$SKIPPED_IDS" | tr ',' '\n' | grep -c '.' || echo 0)
+    ACKNOWLEDGED=$((APPLIED_COUNT + SKIPPED_COUNT))
+
+    if [ "$TOTAL_RETRIEVED" -gt 0 ]; then
+      COVERAGE=$((ACKNOWLEDGED * 100 / TOTAL_RETRIEVED))
+      if [ "$COVERAGE" -lt 100 ]; then
+        echo -e "${YELLOW}[PatternGuard] Coverage: ${COVERAGE}% (${ACKNOWLEDGED}/${TOTAL_RETRIEVED} patterns acknowledged)${RESET}" >&2
+      else
+        echo -e "${GREEN}[PatternGuard] 100% coverage - all patterns acknowledged${RESET}" >&2
       fi
-    done
+    fi
+
+    # LEGACY: Check for [ekkOS_APPLY] markers (fallback if no SELECT block)
+    if [ -z "$APPLIED_IDS" ] && [ -z "$SKIPPED_IDS" ]; then
+      for pattern in $(echo "$PATTERNS" | jq -c '.[]'); do
+        TITLE=$(echo "$pattern" | jq -r '.title // ""')
+        PID=$(echo "$pattern" | jq -r '.id // .pattern_id // ""')
+
+        # Only count as applied if AI explicitly marked it with [ekkOS_APPLY]
+        if echo "$LAST_ASSISTANT" | grep -qF "[ekkOS_APPLY]" && echo "$LAST_ASSISTANT" | grep -qF "$TITLE"; then
+          APPLIED_IDS="${APPLIED_IDS}${PID},"
+          echo "[ekkOS_APPLY_DETECTED] Pattern: \"$TITLE\"" >&2
+        fi
+      done
+    fi
+
     APPLIED_PATTERN_IDS=$(echo "$APPLIED_IDS" | sed 's/,$//')
+    SKIPPED_PATTERN_IDS=$(echo "$SKIPPED_IDS" | sed 's/,$//')
   fi
 fi
 

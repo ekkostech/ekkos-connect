@@ -20,6 +20,52 @@ const ROOT = __dirname;
 const PACKAGE_JSON = join(ROOT, 'package.json');
 const CHANGELOG = join(ROOT, 'CHANGELOG.md');
 
+function normalizeRepoUrl(repository) {
+  const raw =
+    typeof repository === 'string'
+      ? repository
+      : repository && typeof repository === 'object'
+        ? repository.url
+        : undefined;
+
+  if (!raw || typeof raw !== 'string') return undefined;
+
+  let url = raw.trim();
+  url = url.replace(/^git\+/, '').replace(/\.git$/, '');
+
+  // Common GitHub SSH forms → https
+  if (url.startsWith('git@github.com:')) {
+    url = `https://github.com/${url.slice('git@github.com:'.length)}`;
+  } else if (url.startsWith('ssh://git@github.com/')) {
+    url = `https://github.com/${url.slice('ssh://git@github.com/'.length)}`;
+  }
+
+  return url;
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function upsertLinkRef(changelog, label, url) {
+  const pattern = new RegExp(`^\\[${escapeRegExp(label)}\\]:\\s+.*$`, 'm');
+  const line = `[${label}]: ${url}`;
+
+  if (pattern.test(changelog)) {
+    return changelog.replace(pattern, line);
+  }
+
+  const needsLeadingNewline = !changelog.endsWith('\n');
+  const needsBlankLine = !/\n\n$/.test(changelog);
+  return (
+    changelog +
+    (needsLeadingNewline ? '\n' : '') +
+    (needsBlankLine ? '\n' : '') +
+    line +
+    '\n'
+  );
+}
+
 const [,, version, ...changeParts] = process.argv;
 const changeDescription = changeParts.join(' ');
 
@@ -69,15 +115,37 @@ try {
 
 `;
 
-  // Insert after "# Changelog" header (before first version entry)
-  const headerIndex = changelog.indexOf('## [');
-  if (headerIndex === -1) {
-    console.error('❌ Error: Could not find changelog version entries');
+  // Insert new entry after "Unreleased" (Keep a Changelog convention),
+  // falling back to inserting before the first version entry.
+  const unreleasedHeader = '## [Unreleased]';
+  const unreleasedIndex = changelog.indexOf(unreleasedHeader);
+  let insertIndex = -1;
+
+  if (unreleasedIndex !== -1) {
+    const afterUnreleased = changelog.indexOf('\n## [', unreleasedIndex + unreleasedHeader.length);
+    insertIndex = afterUnreleased === -1 ? changelog.length : afterUnreleased + 1; // +1 keeps the leading '\n'
+  } else {
+    insertIndex = changelog.indexOf('## [');
+  }
+
+  if (insertIndex === -1) {
+    console.error('❌ Error: Could not find changelog insertion point');
     process.exit(1);
   }
 
-  // Insert new entry
-  changelog = changelog.slice(0, headerIndex) + newEntry + changelog.slice(headerIndex);
+  changelog = changelog.slice(0, insertIndex) + newEntry + changelog.slice(insertIndex);
+
+  // Update link references (compare links) if repository URL is known
+  const repoUrl = normalizeRepoUrl(packageJson.repository) ?? 'https://github.com/ekkostech/ekkos-connect';
+  const cleanRepoUrl = repoUrl.replace(/\/$/, '');
+
+  changelog = upsertLinkRef(changelog, 'Unreleased', `${cleanRepoUrl}/compare/v${version}...HEAD`);
+  changelog = upsertLinkRef(
+    changelog,
+    version,
+    `${cleanRepoUrl}/compare/v${oldVersion}...v${version}`
+  );
+
   writeFileSync(CHANGELOG, changelog);
   console.log(`✅ Updated CHANGELOG.md with version ${version}`);
 

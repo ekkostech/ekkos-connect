@@ -103,6 +103,7 @@ The changelog follows [Keep a Changelog](https://keepachangelog.com/) format:
 - Changes are grouped by type (Added/Changed/Fixed/Removed)
 - Most recent version is at the top
 - Use clear, user-friendly descriptions
+- Link references at the bottom provide compare links (assumes tags like `vX.Y.Z`)
 
 ## Examples
 
@@ -142,4 +143,3 @@ Before publishing:
 - Keep changelog entries clear and user-focused
 - Test thoroughly before publishing
 - Consider backward compatibility when making changes
-

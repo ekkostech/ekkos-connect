@@ -105,9 +105,15 @@ DIM='\033[2m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-# Visual header
+# Get current timestamp in user's local timezone
+CURRENT_TIME=$(date "+%Y-%m-%d %I:%M %p %Z")
+
+# Detect IDE source
+IDE_SOURCE="Claude Code"
+
+# Visual header with timestamp
 echo ""
-echo -e "${CYAN}${BOLD}🧠 ekkOS Memory${RESET}"
+echo -e "${CYAN}${BOLD}🧠 ekkOS Memory${RESET} ${DIM}| ${IDE_SOURCE} (${MODEL_INFO}) | ${CURRENT_TIME}${RESET}"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # [ekkOS_CAPTURE] Capture the PREVIOUS exchange before processing new one

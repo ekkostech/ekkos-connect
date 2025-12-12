@@ -124,3 +124,17 @@ VSCE_PAT="your-pat" npx @vscode/vsce publish --pat "$VSCE_PAT"
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

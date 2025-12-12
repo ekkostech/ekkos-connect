@@ -5,41 +5,57 @@ All notable changes to the ekkOS Connect extension will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.8.17] - 2025-12-12
+
+### Added
+
+- **Usage Tracking**: Tier-aware usage tracking with upgrade prompts
+- **Pattern Scope Toggle**: Toggle search scope (personal / collective / both)
+
 ## [1.8.5] - 2025-12-09
 
 ### Fixed
+
 - **Windsurf MCP Config**: Fixed incorrect path - now uses `~/.codeium/windsurf/mcp_config.json` instead of `~/.windsurf/mcp.json`
 
 ## [1.8.4] - 2025-12-09
 
 ### Changed
-- **New Logo**: Updated extension icon to new ekkOS_ branded logo
+
+- **New Logo**: Updated extension icon to new ekkOS\_ branded logo
 
 ## [1.8.3] - 2025-12-09
 
 ### Changed
+
 - **Branding**: Updated to "ekkOS_Connect" (with underscore) throughout extension and README
 - **Public Repo**: Issues now link to https://github.com/ekkostech/ekkos-connect
 
 ## [1.8.2] - 2025-12-09
 
 ### Fixed
+
 - **Hook Paths**: Fixed project and global hooks to use absolute paths instead of relative paths (prevents "No such file or directory" errors)
 
 ## [1.8.1] - 2025-12-09
 
 ### Fixed
+
 - **README Version**: Updated README to reflect current version and features
 
 ## [1.8.0] - 2025-12-09
 
 ### Added
+
 - **Open VSX Publishing**: Extension now available on Open VSX Registry for Cursor users
 - **Public GitHub Repo**: Source code now available at https://github.com/ekkostech/ekkos-connect
 
 ## [1.7.5] - 2025-01-27
 
 ### Fixed
+
 - Complete auth flow: Login now properly redirects to extension auth endpoint which creates API key and connects extension
 - Added Google OAuth support on login page
 - Auth callback now handles returnTo parameter for extension flows
@@ -47,21 +63,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.7.4] - 2025-12-09
 
 ### Changed
+
 - Fixed Connect Account - now opens platform login directly with Google OAuth support
 
 ## [1.7.3] - 2025-12-09
 
 ### Changed
+
 - Added onUri activation event and uriHandler contribution for proper callback handling
 
 ## [1.7.2] - 2025-12-09
 
 ### Changed
+
 - Fixed Claude Code MCP config - now uses command-based server instead of HTTP/SSE
 
 ## [1.7.1] - 2025-01-27
 
 ### Fixed
+
 - Fixed incorrect API URL in activity fetching - now correctly uses MCP gateway (mcp.ekkos.dev) for all API calls, ensuring signed-in user data is retrieved properly
 
 ## [1.7.0] - 2025-12-09
@@ -158,20 +178,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard integration
 - Status bar indicators
 
----
-
-## Version History
-
-- **1.8.5** - Fixed Windsurf MCP config path
-- **1.8.4** - New ekkOS_ branded logo
-- **1.8.3** - "ekkOS_Connect" branding update
-- **1.8.2** - Fixed hook paths to use absolute paths
-- **1.8.1** - README version sync
-- **1.8.0** - Open VSX + public GitHub repo
-- **1.7.0** - Universal AI Gateway with diagnostics dashboard
-- **1.6.0** - API key display and connection status badges
-- **1.3.2** - Fixed activity API endpoint architecture
-- **1.3.1** - Functional stats sidebar with live API integration
-- **1.3.0** - Auto-setup feature for portable rules
-- **1.2.0** - Initial public release
-
+[Unreleased]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.17...HEAD
+[1.8.17]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.5...v1.8.17
+[1.8.5]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.4...v1.8.5
+[1.8.4]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.3...v1.8.4
+[1.8.3]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.2...v1.8.3
+[1.8.2]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.1...v1.8.2
+[1.8.1]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.5...v1.8.0
+[1.7.5]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.4...v1.7.5
+[1.7.4]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.3...v1.7.4
+[1.7.3]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.2...v1.7.3
+[1.7.2]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.1...v1.7.2
+[1.7.1]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.3.2...v1.6.0
+[1.3.2]: https://github.com/ekkostech/ekkos-connect/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/ekkostech/ekkos-connect/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/ekkostech/ekkos-connect/releases/tag/v1.2.0

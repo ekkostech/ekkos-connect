@@ -19,8 +19,9 @@ interface EkkosConfig {
   email: string;
   token: string;
   apiKey: string;
-  tier: 'free' | 'pro' | 'enterprise';
+  tier: 'free' | 'pro' | 'team' | 'enterprise';
   createdAt: string;
+  patternScope?: 'both' | 'personal' | 'collective'; // Pattern retrieval preference
 }
 
 interface GoldenLoopActivity {
@@ -87,6 +88,14 @@ const MCP_API_URL = 'https://mcp.ekkos.dev';
 const PLATFORM_URL = 'https://platform.ekkos.dev';
 // Use MCP_API_URL for all API calls - it's the unified gateway
 const API_URL = MCP_API_URL;
+
+// Tier display names (matches platform naming)
+const TIER_NAMES: Record<string, string> = {
+  free: 'Echo',
+  pro: 'Resonance',
+  team: 'Harmony',
+  enterprise: 'Enterprise',
+};
 
 // Globals
 let statusBarItem: vscode.StatusBarItem;
@@ -185,7 +194,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ekkos.openDashboard', () => openDashboard()),
     vscode.commands.registerCommand('ekkos.refreshStatus', () => refreshStatus()),
     vscode.commands.registerCommand('ekkos.setupRules', () => setupRulesCommand(context)),
-    vscode.commands.registerCommand('ekkos.setupGlobal', () => setupGlobalHooksCommand(context))
+    vscode.commands.registerCommand('ekkos.setupGlobal', () => setupGlobalHooksCommand(context)),
+    vscode.commands.registerCommand('ekkos.togglePatternScope', () => togglePatternScope())
   );
 
   // Watch for config changes
@@ -662,7 +672,7 @@ let authTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 async function startAuth(context: vscode.ExtensionContext, selectedIde?: string) {
   // Use selected IDE or try to detect
   const uriScheme = selectedIde || vscode.env.uriScheme || 'vscode';
-  const redirectUri = `${uriScheme}://ekkos.ekkos-connect/callback`;
+  const redirectUri = `${uriScheme}://ekkostech.ekkos-connect/callback`;
 
   // Generate state for CSRF protection
   const state = generateRandomString(32);
@@ -710,7 +720,7 @@ async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionCont
   const email = params.get('email');
   const userId = params.get('userId');
   const apiKey = params.get('apiKey');
-  const tier = params.get('tier') as 'free' | 'pro' | 'enterprise';
+  const tier = params.get('tier') as 'free' | 'pro' | 'team' | 'enterprise';
   const state = params.get('state');
 
   // Verify state (CSRF protection)
@@ -811,7 +821,7 @@ async function handleManualApiKey(apiKey: string, context: vscode.ExtensionConte
       email: data.user.email,
       token: 'manual-entry', // No OAuth token for manual entry
       apiKey,
-      tier: (data.user.tier as 'free' | 'pro' | 'enterprise') || 'free',
+      tier: (data.user.tier as 'free' | 'pro' | 'team' | 'enterprise') || 'free',
       createdAt: new Date().toISOString()
     };
     saveConfig(config);
@@ -837,6 +847,34 @@ async function handleManualApiKey(apiKey: string, context: vscode.ExtensionConte
       vscode.window.showErrorMessage('Failed to validate API key: ' + e.message);
     }
   }
+}
+
+function togglePatternScope() {
+  if (!currentConfig) {
+    vscode.window.showErrorMessage('Not connected to ekkOS');
+    return;
+  }
+
+  const scopes: Array<'both' | 'personal' | 'collective'> = ['both', 'personal', 'collective'];
+  const currentScope = currentConfig.patternScope || 'both';
+  const currentIndex = scopes.indexOf(currentScope);
+  const nextScope = scopes[(currentIndex + 1) % scopes.length];
+
+  // Update config
+  currentConfig.patternScope = nextScope;
+  saveConfig(currentConfig);
+
+  // Show notification with icon
+  const icons = { both: '●', personal: 'P', collective: 'C' };
+  const labels = { both: 'Personal + Collective', personal: 'Personal Only', collective: 'Collective Only' };
+
+  vscode.window.showInformationMessage(
+    `Pattern Scope: [${icons[nextScope]}] ${labels[nextScope]}`
+  );
+
+  // Update UI
+  updateStatusBar();
+  sidebarProvider.refresh();
 }
 
 function disconnect(context: vscode.ExtensionContext) {
@@ -982,10 +1020,12 @@ async function deployToIde(ide: IDEConfig, config: EkkosConfig) {
     };
   } else {
     // Cursor, Windsurf, etc. use HTTP/SSE transport
+    // Include API key in URL as query param (SSE clients often can't set headers)
+    const sseUrl = `${MCP_API_URL}/api/v1/mcp/sse?api_key=${encodeURIComponent(config.apiKey)}`;
     mcpConfig = {
       mcpServers: {
         'ekkos-memory': {
-          url: `${MCP_API_URL}/api/v1/mcp/sse`,
+          url: sseUrl,
           transport: 'sse',
           headers: {
             Authorization: `Bearer ${config.apiKey}`,
@@ -1047,14 +1087,15 @@ async function deployToCodex(ide: IDEConfig, config: EkkosConfig) {
   }
 
   // ekkOS MCP server config in TOML format
-  // Use http_headers for direct auth (same approach as other IDEs)
+  // Use http_headers for direct auth, with API key in URL as fallback
+  const sseUrlWithKey = `${MCP_API_URL}/api/v1/mcp/sse?api_key=${encodeURIComponent(config.apiKey)}`;
   const ekkosToml = `
 # ═══════════════════════════════════════════════════════════════════════════
 # ekkOS Memory - AI memory system with 10-layer architecture
 # https://ekkos.dev (configured by ekkOS Connect extension)
 # ═══════════════════════════════════════════════════════════════════════════
 [mcp_servers.ekkos]
-url = "${MCP_API_URL}/api/v1/mcp/sse"
+url = "${sseUrlWithKey}"
 http_headers = { "Authorization" = "Bearer ${config.apiKey}", "X-User-ID" = "${config.userId}" }
 `;
 
@@ -1191,13 +1232,19 @@ For documentation: https://docs.ekkos.dev
 
 function updateStatusBar() {
   if (currentConfig) {
-    statusBarItem.text = `$(database) ekkOS: ${currentConfig.tier}`;
-    statusBarItem.tooltip = `Connected as ${currentConfig.email}\nClick to manage`;
+    const scope = currentConfig.patternScope || 'both';
+    const scopeIcons = { both: '●', personal: 'P', collective: 'C' };
+    const scopeLabels = { both: 'Personal + Collective', personal: 'Personal Only', collective: 'Collective Only' };
+
+    statusBarItem.text = `$(database) ekkOS [${scopeIcons[scope]}]`;
+    statusBarItem.tooltip = `Connected as ${currentConfig.email}\nPattern Scope: ${scopeLabels[scope]}\n\nClick to toggle scope`;
     statusBarItem.backgroundColor = undefined;
+    statusBarItem.command = 'ekkos.togglePatternScope'; // Make clickable
   } else {
     statusBarItem.text = '$(database) ekkOS: Connect';
     statusBarItem.tooltip = 'Click to connect to ekkOS';
     statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    statusBarItem.command = 'ekkos.openSidebar';
   }
 
   const showStatusBar = vscode.workspace.getConfiguration('ekkos').get('showStatusBar', true);
@@ -1298,7 +1345,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         case 'runDiagnostics':
           checkSetupStatus().then(status => {
             sidebarProvider?.refresh();
-            vscode.window.showInformationMessage(`Setup Score: ${status.setupScore}% - API: ${status.apiConnection.status}${status.apiConnection.latency ? ` (${status.apiConnection.latency}ms)` : ''}`);
+            vscode.window.showInformationMessage(`API: ${status.apiConnection.status}${status.apiConnection.latency ? ` (${status.apiConnection.latency}ms)` : ''}`);
           });
           break;
         case 'manualApiKey':
@@ -1386,9 +1433,17 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     // Golden Loop stats with fallback
     const loopStats = activity?.goldenLoop || { retrievals: 0, applications: 0, forged: 0, successRate: 0 };
     const usageStats = activity?.usage || {
-      ekkos: { used: 0, limit: config?.tier === 'enterprise' ? -1 : (config?.tier === 'pro' ? 10000 : 100) },
-      crystallizations: { used: 0, limit: config?.tier === 'enterprise' ? -1 : (config?.tier === 'pro' ? 1000 : 50) }
+      ekkos: { used: 0, limit: (config?.tier === 'enterprise' || config?.tier === 'team' || config?.tier === 'pro') ? -1 : 100 },
+      crystallizations: { used: 0, limit: (config?.tier === 'enterprise' || config?.tier === 'team' || config?.tier === 'pro') ? -1 : 50 }
     };
+
+    // Calculate usage percentages for tier enforcement
+    const ekkosPercent = usageStats.ekkos.limit === -1 ? 0 : (usageStats.ekkos.used / usageStats.ekkos.limit) * 100;
+    const crystallizePercent = usageStats.crystallizations.limit === -1 ? 0 : (usageStats.crystallizations.used / usageStats.crystallizations.limit) * 100;
+    const ekkosStatus = ekkosPercent >= 100 ? 'exceeded' : ekkosPercent >= 80 ? 'warning' : 'normal';
+    const crystallizeStatus = crystallizePercent >= 100 ? 'exceeded' : crystallizePercent >= 80 ? 'warning' : 'normal';
+    const showUpgradeBanner = config?.tier === 'free' && (ekkosPercent >= 80 || crystallizePercent >= 80);
+    const limitExceeded = config?.tier === 'free' && (ekkosPercent >= 100 || crystallizePercent >= 100);
     const activityFeed = activity?.activityFeed || [];
 
     const connectedHtml = config ? `
@@ -1429,8 +1484,8 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <div class="user-details">
             <div class="user-email">${config.email}</div>
             <div class="user-tier tier-${config.tier}">
-              <span class="tier-icon">${config.tier === 'enterprise' ? '👑' : config.tier === 'pro' ? '⭐' : '🆓'}</span>
-              ${config.tier.toUpperCase()}
+              <span class="tier-icon">${config.tier === 'enterprise' ? '👑' : config.tier === 'pro' ? '⭐' : config.tier === 'team' ? '🤝' : '🆓'}</span>
+              ${TIER_NAMES[config.tier] || config.tier.toUpperCase()}
             </div>
           </div>
         </div>
@@ -1471,32 +1526,48 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
 
       <div class="section usage-section">
         <h3>📊 Usage This Month</h3>
-        <div class="usage-card">
-          <div class="usage-item">
+        <div class="usage-card ${limitExceeded ? 'limit-exceeded' : ''}">
+          <div class="usage-item ${ekkosStatus}">
             <div class="usage-header">
               <span class="usage-icon">🔮</span>
               <span class="usage-name">Memory Queries</span>
-              <span class="usage-count">${usageStats.ekkos.used.toLocaleString()} / ${usageStats.ekkos.limit === -1 ? '∞' : usageStats.ekkos.limit.toLocaleString()}</span>
+              <span class="usage-count ${ekkosStatus}">${usageStats.ekkos.used.toLocaleString()} / ${usageStats.ekkos.limit === -1 ? '∞' : usageStats.ekkos.limit.toLocaleString()}</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar-fill" style="width: ${usageStats.ekkos.limit === -1 ? 5 : Math.min(100, (usageStats.ekkos.used / usageStats.ekkos.limit) * 100)}%">
+              <div class="progress-bar-fill ${ekkosStatus}" style="width: ${usageStats.ekkos.limit === -1 ? 5 : Math.min(100, (usageStats.ekkos.used / usageStats.ekkos.limit) * 100)}%">
                 <div class="progress-shimmer"></div>
               </div>
             </div>
+            ${ekkosStatus === 'exceeded' ? '<div class="limit-message">⚠️ Limit reached</div>' : ''}
           </div>
-          <div class="usage-item">
+          <div class="usage-item ${crystallizeStatus}">
             <div class="usage-header">
               <span class="usage-icon">💎</span>
               <span class="usage-name">Crystallizations</span>
-              <span class="usage-count">${usageStats.crystallizations.used.toLocaleString()} / ${usageStats.crystallizations.limit === -1 ? '∞' : usageStats.crystallizations.limit.toLocaleString()}</span>
+              <span class="usage-count ${crystallizeStatus}">${usageStats.crystallizations.used.toLocaleString()} / ${usageStats.crystallizations.limit === -1 ? '∞' : usageStats.crystallizations.limit.toLocaleString()}</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar-fill crystallize" style="width: ${usageStats.crystallizations.limit === -1 ? 5 : Math.min(100, (usageStats.crystallizations.used / usageStats.crystallizations.limit) * 100)}%">
+              <div class="progress-bar-fill crystallize ${crystallizeStatus}" style="width: ${usageStats.crystallizations.limit === -1 ? 5 : Math.min(100, (usageStats.crystallizations.used / usageStats.crystallizations.limit) * 100)}%">
                 <div class="progress-shimmer"></div>
               </div>
             </div>
+            ${crystallizeStatus === 'exceeded' ? '<div class="limit-message">⚠️ Limit reached</div>' : ''}
           </div>
         </div>
+        ${showUpgradeBanner ? `
+        <div class="upgrade-banner ${limitExceeded ? 'critical' : 'warning'}">
+          <div class="upgrade-icon">${limitExceeded ? '🚫' : '⚠️'}</div>
+          <div class="upgrade-content">
+            <div class="upgrade-title">${limitExceeded ? 'Echo Tier Limit Reached' : 'Approaching Echo Tier Limit'}</div>
+            <div class="upgrade-message">${limitExceeded
+              ? 'Upgrade to Resonance for unlimited memory and pattern forging.'
+              : Math.max(Math.round(ekkosPercent), Math.round(crystallizePercent)) + '% of Echo tier used. Upgrade to Resonance for more.'}</div>
+          </div>
+          <a href="https://platform.ekkos.dev/pricing" class="upgrade-btn">
+            <span>Upgrade</span>
+            <span class="upgrade-arrow">→</span>
+          </a>
+        </div>` : ''}
       </div>
 
       <div class="section activity-section">
@@ -1587,17 +1658,6 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <h3>🔧 System Diagnostics</h3>
           <button class="refresh-btn" onclick="runDiagnostics()" title="Run full diagnostics">⚡</button>
         </div>
-        <div class="setup-score-card">
-          <div class="score-ring">
-            <svg viewBox="0 0 36 36" class="circular-chart">
-              <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"></path>
-              <path class="circle" stroke-dasharray="${setupStatus?.setupScore || 0}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"></path>
-            </svg>
-            <div class="score-value">${setupStatus?.setupScore || 0}%</div>
-          </div>
-          <div class="score-label">Setup Score</div>
-        </div>
-
         <div class="diagnostic-grid">
           <div class="diagnostic-item ${setupStatus?.apiConnection?.status === 'connected' ? 'ok' : 'warn'}">
             <span class="diag-icon">${setupStatus?.apiConnection?.status === 'connected' ? '✅' : '⚠️'}</span>
@@ -1986,7 +2046,8 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     .tier-icon { font-size: 10px; }
     .tier-free { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
     .tier-pro { background: rgba(124, 58, 237, 0.2); color: #a78bfa; }
-    .tier-enterprise { background: rgba(6, 182, 212, 0.2); color: #22d3ee; }
+    .tier-team { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .tier-enterprise { background: rgba(236, 72, 153, 0.2); color: #f472b6; }
 
     /* ============ Golden Loop Stats ============ */
     .golden-loop-section { }
@@ -2084,6 +2145,90 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       0% { transform: translateX(-100%); }
       100% { transform: translateX(100%); }
     }
+
+    /* ============ Usage Warning/Exceeded States ============ */
+    .progress-bar-fill.warning {
+      background: linear-gradient(90deg, #f59e0b, #eab308) !important;
+    }
+    .progress-bar-fill.exceeded {
+      background: linear-gradient(90deg, #ef4444, #dc2626) !important;
+      animation: pulse-danger 1.5s ease-in-out infinite;
+    }
+    .usage-count.warning { color: #f59e0b !important; font-weight: 600; }
+    .usage-count.exceeded { color: #ef4444 !important; font-weight: 700; }
+    .usage-card.limit-exceeded {
+      border-color: rgba(239, 68, 68, 0.5) !important;
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
+    }
+    .limit-message {
+      font-size: 10px;
+      color: #ef4444;
+      margin-top: 4px;
+      font-weight: 500;
+    }
+    @keyframes pulse-danger {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+
+    /* ============ Upgrade Banner ============ */
+    .upgrade-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 10px;
+      margin-top: 12px;
+      border: 1px solid;
+    }
+    .upgrade-banner.warning {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(234, 179, 8, 0.05));
+      border-color: rgba(245, 158, 11, 0.3);
+    }
+    .upgrade-banner.critical {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(220, 38, 38, 0.05));
+      border-color: rgba(239, 68, 68, 0.4);
+      animation: border-pulse 2s ease-in-out infinite;
+    }
+    @keyframes border-pulse {
+      0%, 100% { border-color: rgba(239, 68, 68, 0.4); }
+      50% { border-color: rgba(239, 68, 68, 0.7); }
+    }
+    .upgrade-icon { font-size: 20px; flex-shrink: 0; }
+    .upgrade-content { flex: 1; min-width: 0; }
+    .upgrade-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      margin-bottom: 2px;
+    }
+    .upgrade-banner.warning .upgrade-title { color: #f59e0b; }
+    .upgrade-banner.critical .upgrade-title { color: #ef4444; }
+    .upgrade-message {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.3;
+    }
+    .upgrade-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: linear-gradient(135deg, #8b5cf6, #6366f1);
+      color: white;
+      padding: 8px 14px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 600;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .upgrade-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+    }
+    .upgrade-arrow { transition: transform 0.2s; }
+    .upgrade-btn:hover .upgrade-arrow { transform: translateX(2px); }
 
     /* ============ Activity Section ============ */
     .activity-card {
@@ -2227,55 +2372,6 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       border-radius: 12px;
       padding: 16px;
       margin-bottom: 12px;
-    }
-    .setup-score-card {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 16px;
-      margin-bottom: 12px;
-    }
-    .score-ring {
-      position: relative;
-      width: 80px;
-      height: 80px;
-    }
-    .circular-chart {
-      width: 100%;
-      height: 100%;
-      transform: rotate(-90deg);
-    }
-    .circle-bg {
-      fill: none;
-      stroke: rgba(139, 92, 246, 0.1);
-      stroke-width: 3;
-    }
-    .circle {
-      fill: none;
-      stroke: url(#scoreGradient);
-      stroke-width: 3;
-      stroke-linecap: round;
-      animation: progress 1s ease-out forwards;
-    }
-    @keyframes progress {
-      0% { stroke-dasharray: 0 100; }
-    }
-    .score-value {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      font-size: 18px;
-      font-weight: bold;
-      background: linear-gradient(135deg, #8b5cf6, #06b6d4);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    .score-label {
-      font-size: 11px;
-      color: var(--vscode-descriptionForeground);
-      margin-top: 8px;
     }
     .diagnostic-grid {
       display: grid;

@@ -19,21 +19,24 @@ We ship updates **daily**. Things will change, improve, and occasionally break. 
 
 One-click setup for ekkOS\_ memory system across all AI IDEs.
 
-**Version**: 1.8.17 | [Changelog](https://github.com/ekkostech/ekkos-connect/blob/main/CHANGELOG.md)
+**Version**: 1.9.0 | [Changelog](https://github.com/ekkostech/ekkos-connect/blob/main/CHANGELOG.md)
 
 ## Features
 
 - **One-click OAuth** - Connect to your ekkOS\_ account with a single click
 - **Auto MCP Deploy** - Automatically deploys MCP configuration to all supported IDEs:
-  - Cursor
-  - Claude Code (cross-platform: macOS, Linux, Windows)
+  - Cursor (`~/.cursor/mcp.json`)
+  - Claude Code CLI (`~/.claude/settings.json`)
+  - Claude Desktop App
+  - Windsurf (`~/.codeium/windsurf/mcp_config.json`)
   - VS Code (Continue extension)
-  - Windsurf
+  - OpenAI Codex CLI
+- **Cross-Platform** - Supports macOS, Linux, and Windows paths
+- **Restart Prompts** - Clear instructions on how to restart each IDE after deployment
+- **Health Check** - Test MCP gateway connectivity with one click
 - **AI Instructions** - Deploy `.claude.md` and `.cursorrules` to your project
 - **Status Bar** - Always know your connection status
 - **Sidebar** - Quick access to all ekkOS\_ features
-- **Offline Indicator** - Shows sync status and last sync time
-- **Retry Logic** - Automatic retries with exponential backoff
 
 ## Getting Started
 
@@ -61,10 +64,36 @@ One-click setup for ekkOS\_ memory system across all AI IDEs.
 
 ## Requirements
 
-- VS Code 1.80.0 or higher
+- VS Code 1.80.0 or higher (or Cursor/Windsurf)
 - Node.js 18+ (for MCP server)
+
+## MCP Package
+
+This extension deploys configs that use `@ekkos/mcp-server` - the official ekkOS MCP bridge package:
+
+```bash
+npx -y @ekkos/mcp-server
+```
+
+The package creates a stdio-to-HTTP bridge that connects your AI tools to the ekkOS cloud memory system.
+
+## Troubleshooting
+
+**MCP not loading?**
+1. Check Node.js version: `node --version` (must be 18+)
+2. Verify config file exists at the correct path
+3. Test manually: `EKKOS_API_KEY=xxx npx @ekkos/mcp-server`
+4. Restart your IDE completely (not just reload window)
+
+**Config file locations:**
+| IDE | macOS/Linux | Windows |
+|-----|-------------|---------|
+| Claude Code | `~/.claude/settings.json` | `%USERPROFILE%\.claude\settings.json` |
+| Cursor | `~/.cursor/mcp.json` | `%USERPROFILE%\.cursor\mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `%USERPROFILE%\.codeium\windsurf\mcp_config.json` |
 
 ## Support
 
 - Documentation: https://docs.ekkos.dev
 - Issues: https://github.com/ekkostech/ekkos-connect/issues
+- Discord: https://discord.gg/vePAuEYp

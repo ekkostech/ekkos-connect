@@ -915,16 +915,25 @@ function getIdeConfigs(): IDEConfig[] {
     deployed: false
   });
 
-  // Claude Code (claude_desktop_config.json) - cross-platform
-  const claudeCodeConfig = process.platform === 'darwin'
+  // Claude Code CLI (uses ~/.claude/settings.json)
+  const claudeCodeCliConfig = path.join(homeDir, '.claude', 'settings.json');
+  configs.push({
+    name: 'Claude Code',
+    configPath: claudeCodeCliConfig,
+    exists: fs.existsSync(path.dirname(claudeCodeCliConfig)) || true, // Always allow creating .claude dir
+    deployed: false
+  });
+
+  // Claude Desktop App (claude_desktop_config.json) - separate from CLI
+  const claudeDesktopConfig = process.platform === 'darwin'
     ? path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
     : process.platform === 'win32'
       ? path.join(process.env.APPDATA || homeDir, 'Claude', 'claude_desktop_config.json')
       : path.join(homeDir, '.config', 'Claude', 'claude_desktop_config.json');
   configs.push({
-    name: 'Claude Code',
-    configPath: claudeCodeConfig,
-    exists: fs.existsSync(path.dirname(claudeCodeConfig)),
+    name: 'Claude Desktop',
+    configPath: claudeDesktopConfig,
+    exists: fs.existsSync(path.dirname(claudeDesktopConfig)),
     deployed: false
   });
 
@@ -957,6 +966,7 @@ async function deployMcpConfig() {
 
   const ideConfigs = getIdeConfigs();
   const results: string[] = [];
+  const deployedIdes: string[] = [];
 
   for (const ide of ideConfigs) {
     if (!ide.exists) {
@@ -966,25 +976,83 @@ async function deployMcpConfig() {
 
     try {
       await deployToIde(ide, currentConfig);
-      results.push(`${ide.name}: Deployed`);
+      results.push(`${ide.name}: Deployed ✓`);
+      deployedIdes.push(ide.name);
     } catch (e: any) {
       results.push(`${ide.name}: Failed - ${e.message}`);
     }
   }
 
-  vscode.window.showInformationMessage(
-    `MCP Config Deployment Results:\n${results.join('\n')}`,
-    'View Details'
-  ).then(selection => {
-    if (selection === 'View Details') {
-      const panel = vscode.window.createOutputChannel('ekkOS Deploy');
-      panel.appendLine('=== MCP Config Deployment Results ===');
-      results.forEach(r => panel.appendLine(r));
-      panel.show();
+  // Show results with restart prompt for Claude-based IDEs
+  const claudeDeployed = deployedIdes.some(name => name.includes('Claude'));
+  const cursorDeployed = deployedIdes.includes('Cursor');
+
+  let restartMessage = '';
+  if (claudeDeployed || cursorDeployed) {
+    restartMessage = '\n\n⚠️ IMPORTANT: You must restart your AI tool to load the new MCP server.';
+    if (claudeDeployed) {
+      restartMessage += '\n• Claude Code: Run "claude" again in terminal';
+      restartMessage += '\n• Claude Desktop: Quit and reopen the app';
     }
-  });
+    if (cursorDeployed) {
+      restartMessage += '\n• Cursor: Use Cmd+Shift+P → "Reload Window"';
+    }
+  }
+
+  const selection = await vscode.window.showInformationMessage(
+    `MCP Config Deployed!\n${results.filter(r => r.includes('✓')).length} of ${ideConfigs.filter(i => i.exists).length} IDEs configured.${restartMessage}`,
+    'View Details',
+    'Test Connection'
+  );
+
+  if (selection === 'View Details') {
+    const panel = vscode.window.createOutputChannel('ekkOS Deploy');
+    panel.appendLine('=== MCP Config Deployment Results ===');
+    panel.appendLine('');
+    results.forEach(r => panel.appendLine(r));
+    panel.appendLine('');
+    panel.appendLine('=== Next Steps ===');
+    panel.appendLine('1. Restart your AI tool to load the MCP server');
+    panel.appendLine('2. Test by asking: "Search my ekkOS memory for patterns"');
+    panel.appendLine('3. If issues persist, run: npx @ekkos/mcp-server (to test manually)');
+    panel.show();
+  } else if (selection === 'Test Connection') {
+    await testMcpConnection();
+  }
 
   sidebarProvider?.refresh();
+}
+
+/**
+ * Test MCP connection by calling the health endpoint
+ */
+async function testMcpConnection() {
+  if (!currentConfig) {
+    vscode.window.showErrorMessage('Please connect to ekkOS first');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${MCP_API_URL}/api/v1/health`, {
+      headers: {
+        'Authorization': `Bearer ${currentConfig.apiKey}`
+      }
+    });
+
+    if (response.ok) {
+      vscode.window.showInformationMessage(
+        '✓ ekkOS MCP Gateway is healthy! Your AI tool should be able to connect after restart.'
+      );
+    } else {
+      vscode.window.showWarningMessage(
+        `MCP Gateway returned status ${response.status}. Check your API key at platform.ekkos.dev`
+      );
+    }
+  } catch (error: any) {
+    vscode.window.showErrorMessage(
+      `Could not reach MCP Gateway: ${error.message}. Check your internet connection.`
+    );
+  }
 }
 
 async function deployToIde(ide: IDEConfig, config: EkkosConfig) {
@@ -1004,8 +1072,11 @@ async function deployToIde(ide: IDEConfig, config: EkkosConfig) {
   let finalConfig: any;
   let mcpConfig: any;
 
-  if (ide.name === 'Claude Code') {
-    // Claude Code requires command-based MCP server (not HTTP/SSE)
+  // Claude Code CLI and Claude Desktop both need command-based MCP server
+  const isClaudeBased = ide.name === 'Claude Code' || ide.name === 'Claude Desktop';
+
+  if (isClaudeBased) {
+    // Claude-based apps require command-based MCP server (not HTTP/SSE)
     mcpConfig = {
       mcpServers: {
         'ekkos-memory': {
@@ -1036,26 +1107,8 @@ async function deployToIde(ide: IDEConfig, config: EkkosConfig) {
     };
   }
 
-  if (ide.name === 'Claude Code') {
-    // Claude Code - merge with existing config
-    if (fs.existsSync(ide.configPath)) {
-      try {
-        const existing = JSON.parse(fs.readFileSync(ide.configPath, 'utf8'));
-        finalConfig = {
-          ...existing,
-          mcpServers: {
-            ...existing.mcpServers,
-            ...mcpConfig.mcpServers
-          }
-        };
-      } catch {
-        finalConfig = mcpConfig;
-      }
-    } else {
-      finalConfig = mcpConfig;
-    }
-  } else if (fs.existsSync(ide.configPath)) {
-    // Merge with existing config for other IDEs
+  // Merge with existing config if present
+  if (fs.existsSync(ide.configPath)) {
     try {
       const existing = JSON.parse(fs.readFileSync(ide.configPath, 'utf8'));
       finalConfig = {

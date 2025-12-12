@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2025-12-12
+
+### Added
+
+- **Restart Prompt**: After MCP deployment, shows clear restart instructions for each IDE (Claude Code, Claude Desktop, Cursor)
+- **Test Connection Button**: One-click health check to verify MCP gateway connectivity
+- **Claude Desktop Support**: Now deploys to Claude Desktop app as a separate target from Claude Code CLI
+
+### Fixed
+
+- **Claude Code CLI Path**: Fixed config path - now correctly uses `~/.claude/settings.json` instead of the Claude Desktop app path
+- **Cross-Platform Paths**: Deployment now handles macOS/Linux and Windows paths correctly for all IDEs
+
+### Changed
+
+- **MCP Package**: Now uses `@ekkos/mcp-server` (the new canonical npm package) instead of deprecated `@ekkos/mcp`
+
 ## [1.8.17] - 2025-12-12
 
 ### Added
@@ -178,7 +195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard integration
 - Status bar indicators
 
-[Unreleased]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.17...HEAD
+[Unreleased]: https://github.com/ekkostech/ekkos-connect/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.17...v1.9.0
 [1.8.17]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.5...v1.8.17
 [1.8.5]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.3...v1.8.4

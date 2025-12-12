@@ -3279,3 +3279,5 @@ export function deactivate() {
   statusBarItem?.dispose();
   stopActivityPolling();
 }
+
+

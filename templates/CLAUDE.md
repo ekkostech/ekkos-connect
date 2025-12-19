@@ -1,6 +1,6 @@
 # ekkOS_ Memory System
 
-## CORE PURPOSE (READ THIS FIRST)
+## CORE PURPOSE
 
 **The Golden Loop exists so YOU get SMARTER over time - learn from mistakes, don't repeat them.**
 
@@ -16,21 +16,18 @@ This is YOUR cognitive memory. It makes you:
 
 ## MANDATORY RULES (NOT OPTIONAL)
 
-These are hard rules. Violation breaks the system.
-
 ### RULE 1: RETRIEVE BEFORE ANSWERING
-Before answering ANY technical question, you MUST search memory first.
+Before answering ANY technical question, call `search_memory` first.
 Do not skip this. Do not assume you know the answer.
 
 ### RULE 2: ACKNOWLEDGE ALL RETRIEVED PATTERNS (PatternGuard)
 When patterns are retrieved, you MUST acknowledge EVERY pattern - either use it or skip it.
-**This is REQUIRED, not optional. Responses without acknowledgment are incomplete.**
 
 **For patterns you USE:**
 ```
 [ekkOS_SELECT]
 - id: <pattern_id>
-  reason: <why you're using this pattern>
+  reason: <why using>
   confidence: <0.0-1.0>
 [/ekkOS_SELECT]
 ```
@@ -39,116 +36,149 @@ When patterns are retrieved, you MUST acknowledge EVERY pattern - either use it 
 ```
 [ekkOS_SKIP]
 - id: <pattern_id>
-  reason: <why this pattern doesn't apply>
+  reason: <why not relevant>
 [/ekkOS_SKIP]
 ```
-
-**Example (5 patterns retrieved, 2 used, 3 skipped):**
-```
-[ekkOS_SELECT]
-- id: abc123-def456
-  reason: Matches the auth config issue user described
-  confidence: 0.9
-- id: xyz789-uvw012
-  reason: Deployment pattern relevant to Vercel
-  confidence: 0.8
-[/ekkOS_SELECT]
-
-[ekkOS_SKIP]
-- id: 111222-333444
-  reason: About database migrations, not relevant to this API issue
-- id: 555666-777888
-  reason: Frontend pattern, this is backend work
-- id: 999000-aabbcc
-  reason: Outdated pattern superseded by newer approach
-[/ekkOS_SKIP]
-```
-
-**WHY THIS MATTERS:**
-- Enables accurate tracking of which patterns help solve problems
-- Creates feedback loop to improve pattern quality
-- Validates pattern retrieval is working (not being ignored)
-- 100% coverage = all patterns acknowledged (applied OR skipped)
 
 ### RULE 3: FORGE WHAT YOU LEARN
-When you fix a bug, get corrected, or learn something new, you MUST forge it immediately.
-Do not wait. Do not ask permission. Just forge it.
+When you fix a bug, get corrected, or learn something new, call `forge_pattern` immediately.
 
 ### RULE 4: FAILURES ARE VALUABLE
 When something DOES NOT work, forge it as an anti-pattern.
-This prevents repeating the same mistake.
 
-### VIOLATION = BROKEN SYSTEM
-If you skip these rules, the memory system fails. Future sessions lose knowledge.
+---
 
-## MCP Tools (Use Proactively)
+## MCP Tools (28 Total)
 
-```
-ekko/search_memory     - Search before answering technical questions
-crystallize/forge      - Create patterns when you learn something
-record_outcome         - Track if a pattern worked or failed
-```
+### Core Memory Tools
+| Tool | Description |
+|------|-------------|
+| `search_memory` | 🔴 REQUIRED: Search all 11 layers before answering |
+| `get_context` | Get relevant context for a task |
+| `capture_event` | Capture memory events |
+| `forge_pattern` | 🔴 REQUIRED: Create pattern from solution |
+| `forge_directive` | 🔴 REQUIRED: Create MUST/NEVER/PREFER/AVOID rules |
+| `record_outcome` | Track if pattern worked or failed |
+| `detect_usage` | 🔴 REQUIRED: Auto-detect which patterns were used |
+| `session_summary` | 🔴 REQUIRED: Get summary of MCP activity |
+| `check_conflict` | 🔴 REQUIRED: Check for conflicts before destructive actions |
+| `recall_conversation` | Recall past conversations by time |
+| `search_codebase` | Search project code embeddings |
+| `get_memory_stats` | Get statistics for all layers |
+| `track_application` | Track when pattern is applied |
 
-## Automatic Retrieval (Hooks Handle This)
-- Patterns injected at start → READ and APPLY them
-- Output `[ekkOS_APPLY] Using: "Pattern Name"` when you use one (legacy)
+### Portability Tools
+| Tool | Description |
+|------|-------------|
+| `export_memory` | Export your patterns, directives, plans as portable JSON backup |
+| `import_memory` | Import memory from backup (auto-deduplication) |
 
-## 10-Layer Memory Architecture
+### Plan Management
+| Tool | Description |
+|------|-------------|
+| `create_plan` | Create structured task plan |
+| `list_plans` | List user's plans |
+| `update_plan_status` | Update plan status |
+| `update_plan_step` | Mark step complete/incomplete |
+| `generate_plan_llm` | AI-generate plan from context |
+| `save_plan_template` | Save plan as reusable template |
+| `list_plan_templates` | List available templates |
+| `create_plan_from_template` | Create plan from template |
 
-| Layer | What It Stores | When to Forge |
-|-------|---------------|---------------|
-| 1. Working | Current session state | Auto-managed |
-| 2. Episodic | Past conversations | Auto-captured |
-| 3. Semantic | Embeddings/knowledge | Auto-indexed |
-| 4. **Patterns** | Proven solutions | Bug fix, better approach, gotcha |
-| 5. **Procedural** | Step-by-step guides | Multi-step process that worked |
-| 6. **Collective** | Cross-project wisdom | Works everywhere, not just here |
-| 7. **Meta** | Pattern effectiveness | "Pattern X works for problem type Y" |
-| 8. **Codebase** | Project-specific | This-repo-only patterns |
-| 9. **Directives** | User preferences | "Always do X", "Never do Y" |
-| 10. **Conflict Resolution** | Auto-resolves contradictions | Directives override patterns |
+### Secrets Management (Layer 11)
+| Tool | Description |
+|------|-------------|
+| `store_secret` | Encrypt and store sensitive data (AES-256-GCM) |
+| `get_secret` | Retrieve and decrypt a secret |
+| `list_secrets` | List secrets metadata (no values) |
+| `delete_secret` | Permanently delete a secret |
+| `rotate_secret` | Update secret with new value |
 
-## FORGE TRIGGERS (YOU MUST DO THIS)
+---
 
-### Pattern (Layer 4) - Default
-```
-[ekkOS_LEARN] Forging pattern: "Title"
-```
-**When** (FORGE AGGRESSIVELY):
+## Proactive Tool Triggers (MEMORIZE THESE)
+
+### Always Use `search_memory` When:
+- User asks technical question
+- User mentions past discussion
+- Topic involves architecture, config, or debugging
+- You're about to make a decision
+
+### Always Use `forge_pattern` When:
+- Fixed a bug (especially non-obvious)
+- Discovered better approach
+- Found pitfall or gotcha
+- User corrected you
+- Solved auth/config issue
+- Made architectural decision
+- Something DIDN'T work (anti-pattern)
+
+### Always Use `forge_directive` When:
+- User says "always..." → type: MUST
+- User says "never..." → type: NEVER
+- User says "I prefer..." → type: PREFER
+- User says "don't..." or "avoid..." → type: AVOID
+
+### Always Use `check_conflict` When:
+- About to delete files/data
+- About to deploy to production
+- About to modify config files
+- About to run destructive commands
+
+### Always Use Plan Tools When:
+- Task has 3+ steps
+- User says "help me implement..."
+- Complex feature request
+- Multi-file changes needed
+
+### Always Use Secret Tools When:
+- User shares API key, token, password
+- Need to retrieve stored credentials
+- User asks "do you have my X key?"
+
+---
+
+## 11-Layer Memory Architecture
+
+| # | Layer | What It Stores | When to Forge |
+|---|-------|---------------|---------------|
+| 1 | Working | Current session state | Auto-managed |
+| 2 | Episodic | Past conversations | Auto-captured |
+| 3 | Semantic | Embeddings/knowledge | Auto-indexed |
+| 4 | **Patterns** | Proven solutions | Bug fix, better approach, gotcha |
+| 5 | **Procedural** | Step-by-step guides | Multi-step process that worked |
+| 6 | **Collective** | Cross-project wisdom | Works everywhere, not just here |
+| 7 | **Meta** | Pattern effectiveness | Auto-tracked |
+| 8 | **Codebase** | Project-specific | This-repo-only patterns |
+| 9 | **Directives** | User preferences | "Always do X", "Never do Y" |
+| 10 | **Conflict** | Auto-resolves contradictions | Auto-managed |
+| 11 | **Secrets** | Encrypted credentials | API keys, tokens, config |
+
+---
+
+## FORGE TRIGGERS
+
+### forge_pattern (Layer 4)
+Call `forge_pattern` when:
 - Fixed bug (especially non-obvious)
 - Discovered better approach
 - Found pitfall or gotcha
 - User corrected you
 - Solved auth/config issue
-- Made architectural decision (capture WHY)
-- Wired systems together successfully
-- Debugged non-trivially (capture METHOD)
-- Discovered performance characteristics
+- Made architectural decision
+- Debugged non-trivially
 - Found something that DOESN'T work
 - Understood cross-service data flow
-- Hit environment-specific behavior
-- Formed useful mental model
-- Established testing strategy
-- Applied refactoring transformation
 - Learned correct API usage
 
-### Procedural (Layer 5) - How-To Guides
-```
-[ekkOS_LEARN] Forging procedural: "Title"
-```
-**When**: Built multi-step process, deployment workflow, setup sequence
+### forge_directive (Layer 9)
+Call `forge_directive` when user says:
+- "always..." → type: MUST
+- "never..." → type: NEVER
+- "I prefer..." → type: PREFER
+- "don't..." / "avoid..." → type: AVOID
 
-### Codebase (Layer 8) - Project-Specific
-```
-[ekkOS_LEARN] Forging codebase pattern: "Title"
-```
-**When**: Pattern only applies to THIS project (file locations, conventions)
-
-### Directive (Layer 9) - User Preferences
-```
-[ekkOS_LEARN] Forging directive: "Title"
-```
-**When**: User says "always", "never", "I prefer", "don't do X"
+---
 
 ## Response Format
 
@@ -158,53 +188,20 @@ record_outcome         - Track if a pattern worked or failed
 🧠 **ekkOS_™** · 📅 YYYY-MM-DD H:MM AM/PM TZ
 ```
 
-Example: `🧠 **ekkOS_™** · 📅 2025-12-08 8:30 PM PST`
-
-## Conditional Mid-Stream Triggers
-
-When you detect these conditions mid-conversation, EXECUTE the action:
-
-| Condition Detected | Action |
-|-------------------|--------|
-| Bug fixed | Output `[ekkOS_LEARN] Forging: "Title"` with problem + solution |
-| User says "always/never" | Output `[ekkOS_LEARN] Forging directive: "Title"` with MUST/NEVER |
-| Multi-step workflow complete | Output `[ekkOS_LEARN] Forging procedural: "Title"` |
-| Pattern retrieved but failed | Report failure in response |
-
-This is reactive forging - don't wait for end of session, forge as you go.
+---
 
 ## Quick Reference
 
-- See patterns in hook output → Use `[ekkOS_SELECT]` for ones you use, `[ekkOS_SKIP]` for ones you don't
-- Solve a problem → `[ekkOS_LEARN] Forging: "Title"`
-- User correction → FORGE what you learned
-- Multi-step solution → FORGE as procedural
-- User preference → FORGE as directive
-- Project-specific → FORGE as codebase
+- Technical question → `search_memory` first
+- Patterns retrieved → SELECT or SKIP each one
+- Problem solved → `forge_pattern`
+- User preference → `forge_directive`
+- Need to recall → `recall_conversation`
+- Destructive action → `check_conflict` first
+- Store credentials → `store_secret`
+- Backup your memory → `export_memory`
+- Restore from backup → `import_memory`
 
-## Pattern Acknowledgment Format (REQUIRED - PatternGuard)
+## Documentation
 
-**Every retrieved pattern MUST be acknowledged - either SELECT or SKIP:**
-
-```
-[ekkOS_SELECT]
-- id: <uuid>
-  reason: <1-line why using>
-  confidence: <0.0-1.0>
-[/ekkOS_SELECT]
-
-[ekkOS_SKIP]
-- id: <uuid>
-  reason: <1-line why not relevant>
-[/ekkOS_SKIP]
-```
-
-**Rules:**
-- ALL pattern IDs from retrieval must appear in either SELECT or SKIP
-- 100% coverage required (no patterns left unacknowledged)
-- Hook extracts IDs and tracks outcomes for continuous improvement
-- This enables the system to learn which patterns actually help
-
-## For More Information
-
-Visit https://docs.ekkos.dev for full documentation.      bv√
+https://docs.ekkos.dev

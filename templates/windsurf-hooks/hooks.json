@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "./.codeium/windsurf/hooks/ekkos-before-submit.sh"
+      }
+    ]
+  }
+}

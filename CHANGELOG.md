@@ -1,217 +1,270 @@
-# Changelog
+# Changelog - ekkOS Connect
 
-All notable changes to the ekkOS Connect extension will be documented in this file.
+## [2.3.16] - 2025-12-19
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Golden Loop Enforcement
 
-## [Unreleased]
+**Hook Templates Upgraded with Full Compliance Enforcement:**
 
-## [1.9.0] - 2025-12-12
+All hook templates now include production-grade Golden Loop enforcement:
 
-### Added
+- **Turn Contracts**: JSON evidence files prove retrieval occurred before answering
+- **PatternGuard**: 100% pattern acknowledgment required via `[ekkOS_SELECT]`/`[ekkOS_SKIP]`
+- **STRICT Mode**: `EKKOS_STRICT=1` environment variable blocks turns if retrieval fails
+- **Footer Validation**: Checks for mandatory `🧠 **ekkOS_™** · 📅` footer
+- **Auto-Forge Violations**: Compliance failures recorded as anti-patterns
+- **3-Judge Evaluation**: Triggers consensus evaluation on turn completion
 
-- **Restart Prompt**: After MCP deployment, shows clear restart instructions for each IDE (Claude Code, Claude Desktop, Cursor)
-- **Test Connection Button**: One-click health check to verify MCP gateway connectivity
-- **Claude Desktop Support**: Now deploys to Claude Desktop app as a separate target from Claude Code CLI
+**Files Updated:**
+- `templates/hooks/user-prompt-submit.sh` - Full contract support for Claude Code
+- `templates/hooks/stop.sh` - Compliance validation for Claude Code
+- `templates/hooks/lib/contract.sh` - NEW: Turn contract library
+- `templates/cursor-hooks/before-submit-prompt.sh` - Full enforcement for Cursor
+- `templates/cursor-hooks/lib/contract.sh` - NEW: Contract library for Cursor
+- `templates/windsurf-hooks/before-submit-prompt.sh` - Full enforcement for Windsurf
+- `templates/windsurf-hooks/lib/contract.sh` - NEW: Contract library for Windsurf
+
+### Template Cleanup
 
-### Fixed
+**Removed Duplicate Rules:**
+- Deleted `templates/cursor-rules/` directory (was duplicating `templates/rules/`)
+- Extension now only installs modular `.mdc` files for Cursor:
+  - `00-hooks-contract.mdc` - Hook automation contract
+  - `30-ekkos-core.mdc` - Golden Loop + 28 MCP tools
+  - `31-ekkos-messages.mdc` - Message branding templates
 
-- **Claude Code CLI Path**: Fixed config path - now correctly uses `~/.claude/settings.json` instead of the Claude Desktop app path
-- **Cross-Platform Paths**: Deployment now handles macOS/Linux and Windows paths correctly for all IDEs
+**Benefits:**
+- Easier debugging with modular files
+- No more content duplication
+- Clear separation of concerns
+- Better maintainability for support
 
-### Changed
+---
 
-- **MCP Package**: Now uses `@ekkos/mcp-server` (the new canonical npm package) instead of deprecated `@ekkos/mcp`
+## [2.0.5] - 2025-12-16
 
-## [1.8.17] - 2025-12-12
+### MCP Server Package Fix
 
-### Added
+**Critical Fix:**
+- Changed MCP server package from `@ekkos/mcp-server@2` to `@ekkos/mcp-server@latest`
+- This ensures users always get the latest stable version
+- Fixes "failed" MCP connection status in Claude Code
 
-- **Usage Tracking**: Tier-aware usage tracking with upgrade prompts
-- **Pattern Scope Toggle**: Toggle search scope (personal / collective / both)
+**Affected Configs:**
+- JSON config for Cursor, Claude Code, Claude Desktop, Windsurf
+- TOML config for OpenAI Codex
+- Diagnostic panel test command
 
-## [1.8.5] - 2025-12-09
+---
 
-### Fixed
+## [2.0.4] - 2025-12-16
 
-- **Windsurf MCP Config**: Fixed incorrect path - now uses `~/.codeium/windsurf/mcp_config.json` instead of `~/.windsurf/mcp.json`
+### UI Improvements
 
-## [1.8.4] - 2025-12-09
+**Logo Redesign:**
+- Centered brain logo above text on connect screen
+- Changed logo color to white for better visibility
 
-### Changed
+**AI Agent Status Accuracy:**
+- Changed misleading "Connected" status to "Configured"
+- More accurate representation - we can verify config exists, not that IDE is actively using it
+- New checkmark icon (✓) instead of filled circle (●)
 
-- **New Logo**: Updated extension icon to new ekkOS\_ branded logo
+**Error Message Improvements:**
+- 404 errors now say "Route not found - try updating the extension" (not API key issue)
+- 401/403 errors correctly indicate authentication problems
+- Generic errors no longer incorrectly blame API key
 
-## [1.8.3] - 2025-12-09
+---
 
-### Changed
+## [2.0.3] - 2025-12-15
 
-- **Branding**: Updated to "ekkOS_Connect" (with underscore) throughout extension and README
-- **Public Repo**: Issues now link to https://github.com/ekkostech/ekkos-connect
+### UI Improvements
 
-## [1.8.2] - 2025-12-09
+**Status Bar:**
+- Renamed from "ekkOS" to "ekkOS_"
+- Shows scope indicator: `ekkOS_ [●]` (Both), `ekkOS_ [P]` (Personal), `ekkOS_ [C]` (Collective)
+- Clicking always opens sidebar (no longer toggles scope directly)
 
-### Fixed
+**Scope Switcher in Sidebar:**
+- New "Pattern Scope" section with visual radio buttons
+- Switch between Both/Personal/Collective without leaving sidebar
+- Instant visual feedback on selection
 
-- **Hook Paths**: Fixed project and global hooks to use absolute paths instead of relative paths (prevents "No such file or directory" errors)
+### Native Windows Support
 
-## [1.8.1] - 2025-12-09
+**Node.js Hooks for Windows Users Without Git Bash:**
 
-### Fixed
+The extension now automatically detects if bash is available on Windows. If not, it deploys Node.js hooks that work natively without requiring Git Bash or WSL.
 
-- **README Version**: Updated README to reflect current version and features
+**What's New:**
+- Auto-detects bash availability on Windows using `where bash`
+- Deploys Node.js hooks (`*.js`) when bash isn't found
+- Shell hooks (`*.sh`) still deployed for macOS/Linux and Windows with bash
+- `.claude/settings.json` automatically configured with correct hook commands
 
-## [1.8.0] - 2025-12-09
+**Node.js Hooks Features:**
+- Uses only built-in Node.js modules (https, fs, crypto)
+- Zero dependencies - no npm install required
+- Full feature parity with shell hooks
+- Works on Windows, macOS, and Linux
+
+**11-Layer Architecture (Fixed Ordering):**
+| # | Layer | Purpose |
+|---|-------|---------|
+| 1 | Working | Current session state |
+| 2 | Episodic | Past conversations |
+| 3 | Semantic | Embeddings/knowledge |
+| 4 | Patterns | Proven solutions |
+| 5 | Procedural | Step-by-step guides |
+| 6 | Collective | Cross-project wisdom |
+| 7 | Meta | Pattern effectiveness |
+| 8 | Codebase | Project-specific |
+| 9 | Directives | User preferences |
+| 10 | Conflict Resolution | Auto-resolves contradictions |
+| 11 | Secrets | Encrypted credentials |
+
+---
+
+## [2.0.2] - 2025-12-15
+
+### Universal Rules & Hooks
+
+**Now deploys rules for ALL major AI IDEs:**
+
+| IDE | Rules Location | Format |
+|-----|---------------|--------|
+| Cursor | `.cursor/rules/ekkos-memory.md` | YAML frontmatter + markdown |
+| Claude Code | `CLAUDE.md` + `.claude/hooks/` | Markdown + shell hooks |
+| Windsurf | `.windsurf/rules/ekkos-memory.md` | YAML frontmatter + markdown |
+
+**Bug Fixes:**
+- Fixed Claude Code MCP config path (now uses `~/.claude/claude_desktop_config.json`)
+- Updated memory architecture to 11 layers (added Secrets layer)
+
+**Cross-Platform Support:**
+- macOS/Linux: Full support with shell hooks
+- Windows: Hooks configured to use `bash` (requires Git Bash or WSL)
+- chmod only applied on Unix-like systems
+- Platform-appropriate warnings shown during setup
+
+**IDE Detection:**
+- Extension now detects current IDE (Cursor, Windsurf, Claude Code, VS Code)
+- Only deploys rules/hooks relevant to the detected IDE
+- Cleaner project setup without unnecessary files
+
+**Templates Updated:**
+- All templates now reference 11-layer architecture including Secrets
+- Cursor rules use new `.md` format with `alwaysApply: true`
+- Windsurf rules use `trigger: always_on` for automatic activation
+
+---
+
+## [2.0.1] - 2025-12-15
 
-### Added
+### Improvements
 
-- **Open VSX Publishing**: Extension now available on Open VSX Registry for Cursor users
-- **Public GitHub Repo**: Source code now available at https://github.com/ekkostech/ekkos-connect
+**Credentials Display**
+- Added credentials section showing API Key and User ID
+- Copy button for one-click clipboard copy
+- Reveal/hide toggle for security
+- Shows active API endpoint (mcp.ekkos.dev)
 
-## [1.7.5] - 2025-01-27
+**Version Badge**
+- Version number now displayed in sidebar header
+- Shows on both connected and welcome screens
 
-### Fixed
+**MCP Configuration**
+- Standardized to command-based (stdio) config for all IDEs
+- More reliable than SSE transport
+- Updated Codex TOML config to use command-based format
+- Extension deploys `@ekkos/mcp-server@2` for all IDEs
 
-- Complete auth flow: Login now properly redirects to extension auth endpoint which creates API key and connects extension
-- Added Google OAuth support on login page
-- Auth callback now handles returnTo parameter for extension flows
+**Settings**
+- Added `ekkos.apiUrl` setting for custom API endpoint
+- Added `ekkos.platformUrl` setting for custom platform URL
 
-## [1.7.4] - 2025-12-09
+---
 
-### Changed
+## [2.0.0] - 2025-12-13
 
-- Fixed Connect Account - now opens platform login directly with Google OAuth support
+### 🚀 Major Feature: Automatic Pattern Injection via Chat Participant
 
-## [1.7.3] - 2025-12-09
+**The portable solution is here!** No more relying on AI compliance or gateway proxies.
 
-### Changed
+#### What's New
 
-- Added onUri activation event and uriHandler contribution for proper callback handling
+**@ekkos Chat Participant** - Truly automatic pattern injection in VS Code/Cursor:
 
-## [1.7.2] - 2025-12-09
+- Type `@ekkos` in Cursor chat to activate memory-enhanced responses
+- Patterns automatically retrieved and injected into every request
+- Works with Cursor subscription (no gateway proxy needed)
+- **Participant auto-detection:** Automatically activates for technical questions
 
-### Changed
+#### How It Works
 
-- Fixed Claude Code MCP config - now uses command-based server instead of HTTP/SSE
+```
+User: "@ekkos How do I handle auth errors?"
+       ↓
+Extension intercepts request
+       ↓
+Retrieves patterns from ekkOS API
+       ↓
+Injects into language model context
+       ↓
+AI responds with patterns already in context
+```
 
-## [1.7.1] - 2025-01-27
+#### Benefits
 
-### Fixed
+✅ **Truly Portable** - Works identically in VS Code, Cursor, Codium  
+✅ **Fully Automatic** - No manual tool calls required  
+✅ **No Gateway Needed** - Uses Cursor subscription, not your API credits  
+✅ **Transparent** - User sees which patterns were loaded  
+✅ **Model Agnostic** - Works with any model Cursor supports
 
-- Fixed incorrect API URL in activity fetching - now correctly uses MCP gateway (mcp.ekkos.dev) for all API calls, ensuring signed-in user data is retrieved properly
+#### Migration Guide
 
-## [1.7.0] - 2025-12-09
+**Before (MCP Tools - manual):**
 
-### Added
+```
+User: "Fix this bug"
+AI: Must manually call search_memory tool
+```
 
-- **Universal AI Gateway Branding**: Updated branding to "Universal AI Memory Gateway" throughout the extension
-- **System Diagnostics Dashboard**: New comprehensive diagnostics section with:
-  - Setup Score (0-100%) indicating configuration completeness
-  - Circular progress visualization
-  - Real-time latency monitoring for API connection
-  - Global hooks status (CLAUDE.md, ~/.claude/ hooks)
-  - Project hooks status (CLAUDE.md, .claude/ hooks, .cursorrules)
-- **API Key Display**: Users can now see and copy their API key directly from the sidebar
-- **Active Connection Monitoring**: Real-time connection status for all configured IDEs
-  - Live connection verification via API ping
-  - Visual status badges (Connected, Error, Not Configured, Not Installed)
-  - Automatic refresh every 60 seconds
-- **Run Diagnostics Button**: One-click full system diagnostic check
+**Now (Chat Participant - automatic):**
 
-### Changed
+```
+User: "@ekkos Fix this bug"
+Extension: Auto-retrieves patterns
+AI: Gets patterns in context automatically
+```
 
-- Display name updated to "ekkOS_™ - Universal AI Memory Gateway"
-- Removed VS Code Continue from agent list (pending proper integration)
-- IDE status now shows actual connection state instead of static "Ready"
-- Enhanced polling to check both activity and connection status
+**For Default Behavior:**
+Enable participant detection (already configured) and the extension will auto-activate for:
 
-### Fixed
+- Technical questions
+- Debugging requests
+- Architectural guidance
+- Requests to remember/recall information
 
-- AbortSignal.timeout compatibility issue resolved using AbortController pattern
+### Technical Details
 
-## [1.6.0] - 2025-12-08
+- **API Used:** VS Code Chat Participant API (VS Code 1.90+)
+- **Participant ID:** `ekkos-connect.memory`
+- **Invocation:** `@ekkos` or auto-detection
+- **Integration:** `/api/v1/context/retrieve` endpoint
+- **Response:** Streams patterns + AI response
 
-### Added
+### Breaking Changes
 
-- **API Key Section**: Display truncated API key with copy button
-- **Connection Status Badges**: IDE-specific connection verification
+None - fully backward compatible. MCP tools still work. Gateway proxy still works.
 
-## [1.3.2] - 2025-01-07
+---
 
-### Fixed
+## [1.9.0] - Previous Release
 
-- **Activity API Endpoint**: Fixed stats API to use correct endpoint at `api.ekkos.dev/api/v1/memory/activity` (was incorrectly pointing to `platform.ekkos.dev`)
-- **API Architecture**: Activity endpoint now correctly lives in `apps/memory` (memory substrate project) instead of `apps/web`
-
-### Changed
-
-- Extension now calls `https://api.ekkos.dev` for activity stats (aligned with memory substrate architecture)
-- Stats sidebar now displays real-time data from the deployed API endpoint
-
-## [1.3.1] - 2025-01-07
-
-### Added
-
-- **Functional Stats Sidebar**: Golden Loop stats now connect to live API endpoint
-  - Retrievals count (🔍)
-  - Applications count (✨)
-  - Forged patterns count (🔥)
-  - Success rate percentage (📈)
-  - Usage stats (Memory Queries and Crystallizations with tier-based limits)
-- **Activity Feed**: Real-time feed of recent memory operations
-- **New Logo**: Purple gradient logo with Inter font (weight 900) and ekkOS_™ branding
-
-### Changed
-
-- Updated extension icon to match new brand guidelines (purple gradient)
-- Stats display real data instead of placeholder "0" values
-
-## [1.3.0] - 2025-01-07
-
-### Added
-
-- **Auto-Setup Feature**: Automatic detection and setup of ekkOS rules when opening new workspaces
-  - Checks for `.cursor/rules/` directory on workspace open
-  - One-click setup via `ekkos.setupRules` command
-  - Copies portable rule templates to workspace
-- **Configuration Option**: `ekkos.autoSetup` setting (default: `true`) to enable/disable auto-setup
-- **Portable Rules**: Bundled rule templates in `templates/rules/`:
-  - `00-hooks-contract.mdc` - Hooks integration contract
-  - `30-ekkos-core.mdc` - Core ekkOS Golden Loop workflow
-  - `31-ekkos-messages.mdc` - Branded stream messages
-
-### Changed
-
-- Extension name updated to `ekkos-connect` (was `ekkos-memory`)
-- Display name: "ekkOS_™ - Memory That Learns"
-
-## [1.2.0] - Previous Release
-
-### Added
-
-- Initial release with MCP configuration deployment
-- Account connection and authentication
-- Dashboard integration
-- Status bar indicators
-
-[Unreleased]: https://github.com/ekkostech/ekkos-connect/compare/v1.9.0...HEAD
-[1.9.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.17...v1.9.0
-[1.8.17]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.5...v1.8.17
-[1.8.5]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.4...v1.8.5
-[1.8.4]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.3...v1.8.4
-[1.8.3]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.2...v1.8.3
-[1.8.2]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.1...v1.8.2
-[1.8.1]: https://github.com/ekkostech/ekkos-connect/compare/v1.8.0...v1.8.1
-[1.8.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.5...v1.8.0
-[1.7.5]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.4...v1.7.5
-[1.7.4]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.3...v1.7.4
-[1.7.3]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.2...v1.7.3
-[1.7.2]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.1...v1.7.2
-[1.7.1]: https://github.com/ekkostech/ekkos-connect/compare/v1.7.0...v1.7.1
-[1.7.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.6.0...v1.7.0
-[1.6.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.3.2...v1.6.0
-[1.3.2]: https://github.com/ekkostech/ekkos-connect/compare/v1.3.1...v1.3.2
-[1.3.1]: https://github.com/ekkostech/ekkos-connect/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/ekkostech/ekkos-connect/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/ekkostech/ekkos-connect/releases/tag/v1.2.0
+- One-click MCP configuration
+- Multi-IDE support (Cursor, Claude Code, Windsurf, VS Code)
+- Real-time activity feed
+- Connection wizard improvements

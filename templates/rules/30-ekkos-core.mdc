@@ -67,12 +67,87 @@ Output: `[ekkOS_LEARN] Forged: "Pattern Title"`
 Conversations are captured when MCP tools are called (search_memory, forge_insight).
 For full capture, use Claude Code or the ekkOS dashboard.
 
-## MCP Tool Definitions (YOU call these)
+## MCP Tools (28 Total - YOU call these)
 
-- `mcp__ekkos-memory__search_memory`: **CALL FIRST** - Retrieves patterns for query
-- `mcp__ekkos-memory__forge_insight`: **CALL AFTER SOLVING** - Saves new patterns
-- `mcp__ekkos-memory__track_memory_application`: Track which patterns you used
-- `mcp__ekkos-memory__record_memory_outcome`: Report success/failure
+### 🔴 MANDATORY - Use Proactively
+
+| Tool | Trigger | Description |
+|------|---------|-------------|
+| `search_memory` | Before ANY technical question | Search all 11 memory layers |
+| `forge_pattern` | When you fix bug, learn, get corrected | Create pattern from solution |
+| `forge_directive` | User says "always/never/prefer/avoid" | Create MUST/NEVER/PREFER/AVOID rules |
+| `record_outcome` | Pattern worked or failed | Track success/failure |
+| `detect_usage` | After responding | Auto-detect patterns used |
+| `session_summary` | Show MCP activity | Get activity summary |
+| `check_conflict` | Before destructive action | Check for conflicts |
+
+### 📚 Recall & Context
+
+| Tool | Description |
+|------|-------------|
+| `recall_conversation` | "What did we discuss yesterday?" |
+| `get_context` | Get task-specific context |
+| `search_codebase` | Find code patterns in project |
+| `capture_event` | Manual event capture |
+| `track_application` | Track pattern application |
+| `get_memory_stats` | Memory layer statistics |
+
+### 📋 Plan Management
+
+| Tool | Description |
+|------|-------------|
+| `create_plan` | Create structured plan |
+| `list_plans` | List user's plans |
+| `update_plan_status` | Change plan state |
+| `update_plan_step` | Mark step complete |
+| `generate_plan_llm` | AI-generate plan |
+| `save_plan_template` | Save as reusable template |
+| `list_plan_templates` | List templates |
+| `create_plan_from_template` | Create from template |
+
+### 🔐 Secrets Management
+
+| Tool | Description |
+|------|-------------|
+| `store_secret` | Encrypt and store credentials |
+| `get_secret` | Retrieve and decrypt |
+| `list_secrets` | List metadata (no values) |
+| `delete_secret` | Permanently delete |
+| `rotate_secret` | Update with new value |
+
+### 💾 Portability
+
+| Tool | Description |
+|------|-------------|
+| `export_memory` | Backup patterns, directives, plans |
+| `import_memory` | Restore from backup |
+
+## Proactive Tool Triggers
+
+### Always Use `search_memory` When:
+- User asks technical question
+- User mentions past discussion
+- Topic involves architecture, config, debugging
+- You're about to make a decision
+
+### Always Use `forge_pattern` When:
+- Fixed bug (especially non-obvious)
+- Discovered better approach
+- Found pitfall or gotcha
+- User corrected you
+- Made architectural decision
+- Something DIDN'T work (anti-pattern)
+
+### Always Use `forge_directive` When:
+- User says "always..." → MUST
+- User says "never..." → NEVER
+- User says "I prefer..." → PREFER
+- User says "don't..." → AVOID
+
+### Always Use `check_conflict` When:
+- About to delete files/data
+- About to deploy to production
+- About to modify config files
 
 ## Enforcement
 

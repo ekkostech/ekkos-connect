@@ -14,15 +14,30 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 // Types
-interface EkkosConfig {
+// Config stored in ~/.ekkos/config.json
+// NOTE: apiKey is included for CLI hook access (Claude Code, Cursor hooks)
+// The user's ekk_* API key is user-scoped and already exposed in MCP configs
+interface EkkosPublicConfig {
   userId: string;
   email: string;
-  token: string;
-  apiKey: string;
   tier: 'free' | 'pro' | 'team' | 'enterprise';
   createdAt: string;
-  patternScope?: 'both' | 'personal' | 'collective'; // Pattern retrieval preference
+  patternScope?: 'both' | 'personal' | 'collective';
+  apiKey?: string;  // For CLI hooks that can't access VS Code SecretStorage
 }
+
+// Full config including secrets (runtime only, secrets from SecretStorage)
+interface EkkosConfig extends EkkosPublicConfig {
+  token: string;   // From SecretStorage
+  apiKey: string;  // From SecretStorage
+}
+
+// Secret keys for SecretStorage
+const SECRET_KEY_TOKEN = 'ekkos.token';
+const SECRET_KEY_API_KEY = 'ekkos.apiKey';
+
+// Global extension context reference for SecretStorage access
+let extensionContext: vscode.ExtensionContext | null = null;
 
 interface GoldenLoopActivity {
   goldenLoop: {
@@ -31,9 +46,17 @@ interface GoldenLoopActivity {
     successRate: number;
     forged: number;
   };
+  collective?: {
+    total: number;           // Total patterns shared by all users
+    yourContributions: number; // Your patterns promoted to collective
+    yourPatterns: number;     // Your total personal patterns
+    displayTotal?: number;    // Patterns visible based on current scope
+    scope?: string;           // Current scope filter
+  };
   usage: {
     ekkos: { used: number; limit: number };
     crystallizations: { used: number; limit: number };
+    apiRequests?: { used: number; limit: number };
   };
   tier: string;
   activityFeed: Array<{
@@ -81,17 +104,47 @@ interface SetupStatus {
 let ideConnectionStatus: Map<string, { status: string; lastChecked: Date; error?: string }> = new Map();
 let currentSetupStatus: SetupStatus | null = null;
 
+/**
+ * Detect which IDE this extension is running in
+ */
+function detectCurrentIDE(): 'windsurf' | 'cursor' | 'vscode' | 'claude-code' | 'unknown' {
+  const appName = vscode.env.appName?.toLowerCase() || '';
+  
+  if (appName.includes('windsurf') || appName.includes('codeium')) {
+    return 'windsurf';
+  }
+  if (appName.includes('cursor')) {
+    return 'cursor';
+  }
+  if (appName.includes('claude')) {
+    return 'claude-code';
+  }
+  if (appName.includes('visual studio code') || appName.includes('vscode')) {
+    return 'vscode';
+  }
+  
+  return 'unknown';
+}
+
 // Constants
 const EKKOS_DIR = path.join(os.homedir(), '.ekkos');
 const CONFIG_PATH = path.join(EKKOS_DIR, 'config.json');
-const MCP_API_URL = 'https://mcp.ekkos.dev';
-const PLATFORM_URL = 'https://platform.ekkos.dev';
-// Use MCP_API_URL for all API calls - it's the unified gateway
-const API_URL = MCP_API_URL;
+
+// Single source URLs - can be overridden via VS Code settings for development
+function getMcpApiUrl(): string {
+  return vscode.workspace.getConfiguration('ekkos').get('apiUrl', 'https://mcp.ekkos.dev');
+}
+function getPlatformUrl(): string {
+  return vscode.workspace.getConfiguration('ekkos').get('platformUrl', 'https://platform.ekkos.dev');
+}
+
+// Use functions for all URL access to support VS Code settings overrides
+// getMcpApiUrl() and getPlatformUrl() read from workspace configuration
 
 // Tier display names (matches platform naming)
 const TIER_NAMES: Record<string, string> = {
   free: 'Echo',
+  starter: 'Spark',
   pro: 'Resonance',
   team: 'Harmony',
   enterprise: 'Enterprise',
@@ -157,17 +210,34 @@ async function fetchWithRetry(
   throw lastError || new Error('Max retries exceeded');
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   console.log('ekkOS Connect extension activated');
 
-  // Load existing config
-  currentConfig = loadConfig();
+  // Store context for SecretStorage access
+  extensionContext = context;
+
+  // Migrate secrets and sync apiKey for CLI hooks
+  await migrateSecretsFromDisk();
+  await syncApiKeyToConfigFile();
+
+  // Load existing config (async - secrets from SecretStorage)
+  currentConfig = await loadConfigAsync();
 
   // Create status bar
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'ekkos.openSidebar';
   context.subscriptions.push(statusBarItem);
   updateStatusBar();
+
+  // Auto-sync credentials and check connections if user is logged in
+  if (currentConfig?.apiKey) {
+    // Sync credentials after a short delay to let UI initialize
+    // This ensures config files always have the correct API key
+    setTimeout(async () => {
+      await autoDeployToCurrentIde(); // Sync credentials if they've changed
+      await checkIdeConnections();    // Then verify connection status
+    }, 1000);
+  }
 
   // Create sidebar provider
   sidebarProvider = new EkkosSidebarProvider(context.extensionUri, context);
@@ -198,6 +268,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ekkos.togglePatternScope', () => togglePatternScope())
   );
 
+  // Register chat participant for automatic pattern injection
+  registerChatParticipant(context);
+
   // Watch for config changes
   ensureEkkosDir();
   const configWatcher = fs.watchFile(CONFIG_PATH, { interval: 1000 }, () => {
@@ -210,14 +283,36 @@ export function activate(context: vscode.ExtensionContext) {
     dispose: () => fs.unwatchFile(CONFIG_PATH)
   });
 
-  // Show welcome on first run
+  // Refresh activity when window regains focus (keeps metrics fresh)
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState(e => {
+      if (e.focused && currentConfig?.apiKey) {
+        fetchActivity().then(activity => {
+          if (activity) {
+            currentActivity = activity;
+            updateStatusBar();
+            sidebarProvider?.refresh();
+          }
+        });
+      }
+    })
+  );
+
+  // Show welcome on first run - IDE-specific
   if (!context.globalState.get('ekkos.welcomed') && !currentConfig) {
     context.globalState.update('ekkos.welcomed', true);
+    const currentIDE = detectCurrentIDE();
+    const ideName = currentIDE === 'windsurf' ? 'Windsurf' 
+      : currentIDE === 'cursor' ? 'Cursor'
+      : currentIDE === 'claude-code' ? 'Claude Code'
+      : currentIDE === 'vscode' ? 'VS Code'
+      : 'your IDE';
+    
     vscode.window.showInformationMessage(
-      'Welcome to ekkOS Connect! Click the ekkOS icon in the sidebar to get started.',
-      'Open Sidebar'
+      `Welcome to ekkOS! We'll automatically configure ${ideName} for you. Click the ekkOS icon to get started.`,
+      'Get Started'
     ).then(selection => {
-      if (selection === 'Open Sidebar') {
+      if (selection === 'Get Started') {
         vscode.commands.executeCommand('workbench.view.extension.ekkos');
       }
     });
@@ -243,9 +338,12 @@ async function fetchActivity(): Promise<GoldenLoopActivity | null> {
   }
 
   try {
-    // Use MCP_API_URL which is the correct gateway endpoint
+    // Get current scope from config (default: 'both')
+    const scope = currentConfig.patternScope || 'both';
+
+    // Use getMcpApiUrl() which returns the correct gateway endpoint
     const response = await fetchWithRetry(
-      `${MCP_API_URL}/api/v1/memory/activity`,
+      `${getMcpApiUrl()}/api/v1/memory/activity?scope=${scope}`,
       {
         headers: {
           'Authorization': `Bearer ${currentConfig.apiKey}`,
@@ -258,7 +356,16 @@ async function fetchActivity(): Promise<GoldenLoopActivity | null> {
     if (response.ok) {
       lastSuccessfulSync = new Date();
       lastSyncError = null;
-      return await response.json();
+      const data = await response.json();
+
+      // Sync tier from API if it changed (handles upgrades/downgrades)
+      if (data.tier && currentConfig && data.tier !== currentConfig.tier) {
+        currentConfig.tier = data.tier as 'free' | 'pro' | 'team' | 'enterprise';
+        await saveConfigAsync(currentConfig);
+        console.log(`[ekkOS] Tier synced from API: ${data.tier}`);
+      }
+
+      return data;
     } else {
       lastSyncError = `API error: ${response.status}`;
     }
@@ -273,39 +380,27 @@ function startActivityPolling() {
   // Clear existing interval
   if (activityRefreshInterval) {
     clearInterval(activityRefreshInterval);
+    activityRefreshInterval = null;
   }
 
-  // Fetch immediately
-  fetchActivity().then(activity => {
-    if (activity) {
-      currentActivity = activity;
-      updateStatusBar();
-      sidebarProvider?.refresh();
-    }
-  });
-
-  // Check IDE connections and setup status on startup
-  checkIdeConnections();
-  checkSetupStatus();
-
-  // Poll every 30 seconds for activity, every 60 seconds for connections/setup
-  let connectionCheckCounter = 0;
-  activityRefreshInterval = setInterval(async () => {
+  const run = async () => {
     const activity = await fetchActivity();
     if (activity) {
       currentActivity = activity;
       updateStatusBar();
       sidebarProvider?.refresh();
     }
+  };
 
-    // Check connections and setup every 2 polls (60 seconds)
-    connectionCheckCounter++;
-    if (connectionCheckCounter >= 2) {
-      connectionCheckCounter = 0;
-      await checkIdeConnections();
-      await checkSetupStatus();
-    }
-  }, 30000);
+  // Immediate refresh on startup
+  void run();
+
+  // Poll every 60 seconds for live metrics
+  activityRefreshInterval = setInterval(run, 60_000);
+
+  // Check IDE connections and setup status on startup only
+  checkIdeConnections();
+  checkSetupStatus();
 }
 
 function stopActivityPolling() {
@@ -329,28 +424,37 @@ async function checkIdeConnections(): Promise<void> {
 
   const ideConfigs = getIdeConfigs();
 
+  // First, mark all as checking
+  for (const ide of ideConfigs) {
+    if (ide.exists) {
+      ideConnectionStatus.set(ide.name, { status: 'checking', lastChecked: new Date() });
+    }
+  }
+  sidebarProvider?.refresh(); // Show "checking" state immediately
+
+  // Then verify each IDE
   for (const ide of ideConfigs) {
     if (!ide.exists) {
       ideConnectionStatus.set(ide.name, { status: 'not-installed', lastChecked: new Date() });
       continue;
     }
 
-    // Check if config file contains ekkos-memory
+    // Check if config file exists and contains ekkos
     try {
       if (fs.existsSync(ide.configPath)) {
         const content = fs.readFileSync(ide.configPath, 'utf8');
         if (content.includes('ekkos-memory') || content.includes('ekkos')) {
-          // Config exists, now verify API connection
-          const status = await verifyApiConnection();
+          // Config exists - mark as configured (not "connected" since we can't verify if IDE is actually using it)
           ideConnectionStatus.set(ide.name, {
-            status: status.connected ? 'connected' : 'error',
-            lastChecked: new Date(),
-            error: status.error
+            status: 'configured',
+            lastChecked: new Date()
           });
         } else {
+          // Config file exists but ekkOS not configured
           ideConnectionStatus.set(ide.name, { status: 'not-configured', lastChecked: new Date() });
         }
       } else {
+        // Config file doesn't exist - not configured
         ideConnectionStatus.set(ide.name, { status: 'not-configured', lastChecked: new Date() });
       }
     } catch (e) {
@@ -362,7 +466,7 @@ async function checkIdeConnections(): Promise<void> {
     }
   }
 
-  // Refresh sidebar to show updated status
+  // Refresh sidebar to show final status
   sidebarProvider?.refresh();
 }
 
@@ -379,7 +483,7 @@ async function verifyApiConnection(): Promise<{ connected: boolean; error?: stri
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-    const response = await fetch(`${MCP_API_URL}/api/v1/mcp/tools`, {
+    const response = await fetch(`${getMcpApiUrl()}/api/v1/mcp/tools`, {
       headers: {
         'Authorization': `Bearer ${currentConfig.apiKey}`,
         'Content-Type': 'application/json'
@@ -573,7 +677,7 @@ async function checkApiConnectionWithLatency(): Promise<{
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    const response = await fetch(`${MCP_API_URL}/api/v1/mcp/tools`, {
+    const response = await fetch(`${getMcpApiUrl()}/api/v1/mcp/tools`, {
       headers: {
         'Authorization': `Bearer ${currentConfig.apiKey}`,
         'Content-Type': 'application/json'
@@ -630,25 +734,181 @@ function ensureEkkosDir() {
   }
 }
 
-function loadConfig(): EkkosConfig | null {
+// Load public config from disk, secrets from SecretStorage
+async function loadConfigAsync(): Promise<EkkosConfig | null> {
   try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-      return JSON.parse(raw);
+    if (!fs.existsSync(CONFIG_PATH) || !extensionContext) {
+      return null;
     }
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const publicConfig: EkkosPublicConfig = JSON.parse(raw);
+
+    // Get secrets from SecretStorage
+    const token = await extensionContext.secrets.get(SECRET_KEY_TOKEN) || '';
+    const apiKey = await extensionContext.secrets.get(SECRET_KEY_API_KEY) || '';
+
+    if (!apiKey) {
+      // No secrets stored - user needs to re-auth
+      return null;
+    }
+
+    return { ...publicConfig, token, apiKey };
   } catch (e) {
     console.error('Failed to load ekkOS config:', e);
   }
   return null;
 }
 
-function saveConfig(config: EkkosConfig) {
+// Sync version for backward compatibility (uses cached currentConfig)
+function loadConfig(): EkkosConfig | null {
+  // Return cached config (loaded async at startup)
+  return currentConfig;
+}
+
+// Sync apiKey from SecretStorage to config.json for CLI hooks (Claude Code, Cursor)
+// This ensures CLI hooks can authenticate even if user authenticated before this feature
+async function syncApiKeyToConfigFile(): Promise<void> {
+  if (!extensionContext) {
+    return;
+  }
+
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      return;
+    }
+
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const diskConfig = JSON.parse(raw);
+
+    // Already has apiKey - no sync needed
+    if (diskConfig.apiKey) {
+      return;
+    }
+
+    // Get apiKey from SecretStorage
+    const apiKey = await extensionContext.secrets.get(SECRET_KEY_API_KEY);
+    if (!apiKey) {
+      return; // No apiKey to sync
+    }
+
+    console.log('[ekkOS Connect] Syncing apiKey to config.json for CLI hooks...');
+
+    // Update config file with apiKey
+    const updatedConfig: EkkosPublicConfig = {
+      ...diskConfig,
+      apiKey
+    };
+
+    // Atomic write
+    const tempPath = CONFIG_PATH + '.tmp';
+    fs.writeFileSync(tempPath, JSON.stringify(updatedConfig, null, 2));
+    fs.renameSync(tempPath, CONFIG_PATH);
+
+    console.log('[ekkOS Connect] apiKey synced to config.json - CLI hooks can now authenticate');
+  } catch (e) {
+    console.error('[ekkOS Connect] apiKey sync failed:', e);
+  }
+}
+
+// Migration: ensure secrets are in SecretStorage and apiKey is in config for CLI hooks
+// NOTE: apiKey (ekk_*) is kept on disk for CLI hooks (Claude Code, Cursor)
+// Only OAuth token is sensitive and should only be in SecretStorage
+async function migrateSecretsFromDisk(): Promise<void> {
+  if (!extensionContext) {
+    return;
+  }
+
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      return;
+    }
+
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const diskConfig = JSON.parse(raw);
+
+    // Check if token exists on disk (needs migration) or apiKey is missing (needs sync)
+    const hasTokenOnDisk = !!diskConfig.token;
+    const needsApiKeySync = !diskConfig.apiKey;
+
+    if (!hasTokenOnDisk && !needsApiKeySync) {
+      return; // Already in correct state
+    }
+
+    console.log('[ekkOS Connect] Syncing credentials...');
+
+    // Migrate secrets to SecretStorage if not already present
+    const existingApiKey = await extensionContext.secrets.get(SECRET_KEY_API_KEY);
+    const existingToken = await extensionContext.secrets.get(SECRET_KEY_TOKEN);
+
+    if (diskConfig.apiKey && !existingApiKey) {
+      await extensionContext.secrets.store(SECRET_KEY_API_KEY, diskConfig.apiKey);
+      console.log('[ekkOS Connect] API key synced to SecretStorage');
+    }
+
+    if (diskConfig.token && !existingToken) {
+      await extensionContext.secrets.store(SECRET_KEY_TOKEN, diskConfig.token);
+      console.log('[ekkOS Connect] Token migrated to SecretStorage');
+    }
+
+    // Get apiKey for config file (from disk or SecretStorage)
+    const apiKeyForConfig = diskConfig.apiKey || existingApiKey;
+
+    // Rewrite config file with apiKey (for CLI hooks) but without token
+    const cleanConfig: EkkosPublicConfig = {
+      userId: diskConfig.userId,
+      email: diskConfig.email,
+      tier: diskConfig.tier || 'free',
+      createdAt: diskConfig.createdAt || new Date().toISOString(),
+      patternScope: diskConfig.patternScope,
+      apiKey: apiKeyForConfig  // Keep apiKey for CLI hooks
+    };
+
+    // Atomic write
+    const tempPath = CONFIG_PATH + '.tmp';
+    fs.writeFileSync(tempPath, JSON.stringify(cleanConfig, null, 2));
+    fs.renameSync(tempPath, CONFIG_PATH);
+
+    console.log('[ekkOS Connect] Config synced - apiKey available for CLI hooks');
+    // Don't show notification for routine sync
+
+  } catch (e) {
+    console.error('[ekkOS Connect] Secret migration failed:', e);
+    // Don't throw - migration failure shouldn't block activation
+  }
+}
+
+// Save public config to disk, secrets to SecretStorage
+async function saveConfigAsync(config: EkkosConfig): Promise<void> {
+  if (!extensionContext) {
+    throw new Error('Extension context not initialized');
+  }
+
+  // Detect if a different user is signing in
+  const previousConfig = currentConfig;
+  const isUserSwitch = previousConfig && previousConfig.userId !== config.userId;
+
   ensureEkkosDir();
+
+  // Store secrets in SecretStorage (encrypted by VS Code)
+  await extensionContext.secrets.store(SECRET_KEY_TOKEN, config.token);
+  await extensionContext.secrets.store(SECRET_KEY_API_KEY, config.apiKey);
+
+  // Store config in JSON file (includes apiKey for CLI hooks)
+  // NOTE: apiKey (ekk_*) is user-scoped and already written to MCP configs
+  // CLI hooks (Claude Code, Cursor) need this to authenticate without VS Code
+  const publicConfig: EkkosPublicConfig = {
+    userId: config.userId,
+    email: config.email,
+    tier: config.tier,
+    createdAt: config.createdAt,
+    patternScope: config.patternScope,
+    apiKey: config.apiKey  // For CLI hook authentication
+  };
 
   // Atomic write: write to temp file first, then rename
   const tempPath = CONFIG_PATH + '.tmp';
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(config, null, 2));
+    fs.writeFileSync(tempPath, JSON.stringify(publicConfig, null, 2));
     fs.renameSync(tempPath, CONFIG_PATH); // Atomic on POSIX systems
   } catch (e) {
     // Clean up temp file if rename failed
@@ -662,6 +922,12 @@ function saveConfig(config: EkkosConfig) {
   updateStatusBar();
   sidebarProvider?.refresh();
   startActivityPolling(); // Start polling after auth
+
+  // Log account switch for debugging - MCP config will be auto-deployed and reloaded by autoDeployToCurrentIde()
+  if (isUserSwitch) {
+    console.log(`[ekkOS Connect] User switched from ${previousConfig.userId} to ${config.userId}`);
+    console.log(`[ekkOS Connect] MCP config will be updated and window reload offered...`);
+  }
 }
 
 // ============ Authentication ============
@@ -670,8 +936,27 @@ function saveConfig(config: EkkosConfig) {
 let authTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
 async function startAuth(context: vscode.ExtensionContext, selectedIde?: string) {
-  // Use selected IDE or try to detect
-  const uriScheme = selectedIde || vscode.env.uriScheme || 'vscode';
+  // Detect URI scheme based on current IDE or selection
+  // vscode.env.uriScheme should work but may not be correct for all IDEs
+  let uriScheme: string;
+
+  if (selectedIde) {
+    // Manual selection from IDE picker
+    uriScheme = selectedIde;
+  } else {
+    // Auto-detect based on current IDE
+    const currentIDE = detectCurrentIDE();
+    const ideSchemeMap: Record<string, string> = {
+      'cursor': 'cursor',
+      'windsurf': 'windsurf',
+      'claude-code': vscode.env.uriScheme || 'claude', // Claude Code uses 'claude' scheme
+      'vscode': 'vscode',
+      'unknown': vscode.env.uriScheme || 'vscode'
+    };
+    uriScheme = ideSchemeMap[currentIDE] || vscode.env.uriScheme || 'vscode';
+  }
+
+  console.log(`[ekkOS Auth] Using URI scheme: ${uriScheme} (env.uriScheme: ${vscode.env.uriScheme})`);
   const redirectUri = `${uriScheme}://ekkostech.ekkos-connect/callback`;
 
   // Generate state for CSRF protection
@@ -700,18 +985,20 @@ async function startAuth(context: vscode.ExtensionContext, selectedIde?: string)
 
   // Open platform login page directly (supports Google OAuth and other methods)
   // After login, user will be redirected to extension auth endpoint which handles the callback
-  const loginUrl = `${PLATFORM_URL}/login?returnTo=${encodeURIComponent(`/api/auth/extension?state=${state}&redirect=${encodeURIComponent(redirectUri)}`)}`;
+  const loginUrl = `${getPlatformUrl()}/login?returnTo=${encodeURIComponent(`/api/auth/extension?state=${state}&redirect=${encodeURIComponent(redirectUri)}`)}`;
 
   await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
 }
 
 // IDE configurations for the selector
+// Note: 'id' is the URI scheme used for OAuth callback
 const SUPPORTED_IDES = [
   { id: 'cursor', name: 'Cursor', icon: '🔵' },
   { id: 'vscode', name: 'VS Code', icon: '💙' },
   { id: 'vscode-insiders', name: 'VS Code Insiders', icon: '💚' },
   { id: 'windsurf', name: 'Windsurf', icon: '🌊' },
   { id: 'codium', name: 'VSCodium', icon: '🟢' },
+  { id: 'claude', name: 'Claude Code', icon: '💜' },
 ];
 
 async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionContext) {
@@ -759,22 +1046,28 @@ async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionCont
     tier: tier || 'free',
     createdAt: new Date().toISOString()
   };
-  saveConfig(config);
+  await saveConfigAsync(config);
 
+  // Auto-deploy to current IDE immediately (no user action needed)
+  const currentIDE = detectCurrentIDE();
+  const ideName = currentIDE === 'windsurf' ? 'Windsurf' 
+    : currentIDE === 'cursor' ? 'Cursor'
+    : currentIDE === 'claude-code' ? 'Claude Code'
+    : currentIDE === 'vscode' ? 'VS Code'
+    : 'your IDE';
+  
+  // Show success message
   vscode.window.showInformationMessage(
-    `Successfully connected as ${email}!`,
-    'Deploy MCP Config'
+    `✓ Connected as ${email}! Configuring ${ideName}...`,
+    'View Status'
   ).then(selection => {
-    if (selection === 'Deploy MCP Config') {
-      deployMcpConfig();
+    if (selection === 'View Status') {
+      sidebarProvider?.refresh();
     }
   });
 
-  // Auto-deploy MCP if enabled
-  const autoDeployEnabled = vscode.workspace.getConfiguration('ekkos').get('autoDeployMcp', true);
-  if (autoDeployEnabled) {
-    await deployMcpConfig();
-  }
+  // Auto-deploy MCP to current IDE automatically (happens in background)
+  await autoDeployToCurrentIde();
 }
 
 async function handleManualApiKey(apiKey: string, context: vscode.ExtensionContext) {
@@ -788,7 +1081,7 @@ async function handleManualApiKey(apiKey: string, context: vscode.ExtensionConte
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
 
-    const response = await fetch(`${API_URL}/api/v1/me`, {
+    const response = await fetch(`${getMcpApiUrl()}/api/v1/me`, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -824,22 +1117,27 @@ async function handleManualApiKey(apiKey: string, context: vscode.ExtensionConte
       tier: (data.user.tier as 'free' | 'pro' | 'team' | 'enterprise') || 'free',
       createdAt: new Date().toISOString()
     };
-    saveConfig(config);
+    await saveConfigAsync(config);
 
+    // Auto-deploy to current IDE immediately
+    const currentIDE = detectCurrentIDE();
+    const ideName = currentIDE === 'windsurf' ? 'Windsurf' 
+      : currentIDE === 'cursor' ? 'Cursor'
+      : currentIDE === 'claude-code' ? 'Claude Code'
+      : currentIDE === 'vscode' ? 'VS Code'
+      : 'your IDE';
+    
     vscode.window.showInformationMessage(
-      `Successfully connected as ${data.user.email}!`,
-      'Deploy MCP Config'
+      `✓ Connected as ${data.user.email}! Configuring ${ideName}...`,
+      'View Status'
     ).then(selection => {
-      if (selection === 'Deploy MCP Config') {
-        deployMcpConfig();
+      if (selection === 'View Status') {
+        sidebarProvider?.refresh();
       }
     });
 
-    // Auto-deploy MCP if enabled
-    const autoDeployEnabled = vscode.workspace.getConfiguration('ekkos').get('autoDeployMcp', true);
-    if (autoDeployEnabled) {
-      await deployMcpConfig();
-    }
+    // Auto-deploy MCP to current IDE automatically
+    await autoDeployToCurrentIde();
   } catch (e: any) {
     if (e.name === 'AbortError') {
       vscode.window.showErrorMessage('API validation timed out. Please check your connection.');
@@ -849,7 +1147,7 @@ async function handleManualApiKey(apiKey: string, context: vscode.ExtensionConte
   }
 }
 
-function togglePatternScope() {
+async function togglePatternScope() {
   if (!currentConfig) {
     vscode.window.showErrorMessage('Not connected to ekkOS');
     return;
@@ -857,16 +1155,16 @@ function togglePatternScope() {
 
   const scopes: Array<'both' | 'personal' | 'collective'> = ['both', 'personal', 'collective'];
   const currentScope = currentConfig.patternScope || 'both';
-  const currentIndex = scopes.indexOf(currentScope);
+  const currentIndex = scopes.indexOf(currentScope as 'both' | 'personal' | 'collective');
   const nextScope = scopes[(currentIndex + 1) % scopes.length];
 
   // Update config
   currentConfig.patternScope = nextScope;
-  saveConfig(currentConfig);
+  await saveConfigAsync(currentConfig);
 
   // Show notification with icon
-  const icons = { both: '●', personal: 'P', collective: 'C' };
-  const labels = { both: 'Personal + Collective', personal: 'Personal Only', collective: 'Collective Only' };
+  const icons: Record<string, string> = { both: '●', personal: 'P', collective: 'C' };
+  const labels: Record<string, string> = { both: 'Personal + Collective', personal: 'Personal Only', collective: 'All Users' };
 
   vscode.window.showInformationMessage(
     `Pattern Scope: [${icons[nextScope]}] ${labels[nextScope]}`
@@ -915,12 +1213,12 @@ function getIdeConfigs(): IDEConfig[] {
     deployed: false
   });
 
-  // Claude Code CLI (uses ~/.claude/settings.json)
-  const claudeCodeCliConfig = path.join(homeDir, '.claude', 'settings.json');
+  // Claude Code CLI (uses ~/.claude.json for MCP servers - NOT settings.json!)
+  const claudeCodeCliConfig = path.join(homeDir, '.claude.json');
   configs.push({
     name: 'Claude Code',
     configPath: claudeCodeCliConfig,
-    exists: fs.existsSync(path.dirname(claudeCodeCliConfig)) || true, // Always allow creating .claude dir
+    exists: true, // Claude Code CLI dir can be created if missing
     deployed: false
   });
 
@@ -956,6 +1254,164 @@ function getIdeConfigs(): IDEConfig[] {
   });
 
   return configs;
+}
+
+/**
+ * Get configuration for the current IDE only
+ * Much simpler than getting all IDE configs
+ */
+function getCurrentIdeConfig(): IDEConfig | null {
+  const currentIDE = detectCurrentIDE();
+  const homeDir = os.homedir();
+  
+  // Map current IDE to its config path
+  let configPath: string;
+  let ideName: string;
+  
+  if (currentIDE === 'windsurf') {
+    configPath = path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json');
+    ideName = 'Windsurf';
+  } else if (currentIDE === 'cursor') {
+    configPath = path.join(homeDir, '.cursor', 'mcp.json');
+    ideName = 'Cursor';
+  } else if (currentIDE === 'claude-code') {
+    // Claude Code uses ~/.claude.json for MCP servers (NOT settings.json!)
+    configPath = path.join(homeDir, '.claude.json');
+    ideName = 'Claude Code';
+  } else if (currentIDE === 'vscode') {
+    // VS Code uses Cursor's config format
+    configPath = path.join(homeDir, '.cursor', 'mcp.json');
+    ideName = 'VS Code';
+  } else {
+    // Unknown IDE
+    return null;
+  }
+  
+  return {
+    name: ideName,
+    configPath,
+    exists: fs.existsSync(path.dirname(configPath)),
+    deployed: false
+  };
+}
+
+/**
+ * Automatically deploy MCP config to the current IDE only
+ * Called after login - simple, direct, no mess
+ */
+async function autoDeployToCurrentIde(): Promise<void> {
+  if (!currentConfig) {
+    return;
+  }
+
+  const currentIDE = detectCurrentIDE();
+  const ideConfig = getCurrentIdeConfig();
+  
+  if (!ideConfig) {
+    // Unknown IDE - show generic message
+    vscode.window.showInformationMessage('ekkOS memory is ready! Configure your AI agent manually at platform.ekkos.dev');
+    return;
+  }
+
+  if (!ideConfig.exists) {
+    // IDE directory doesn't exist
+    const message = currentIDE === 'windsurf' 
+      ? 'Windsurf configuration directory not found. Make sure Windsurf is installed.'
+      : currentIDE === 'cursor'
+      ? 'Cursor configuration directory not found. Make sure Cursor is installed.'
+      : 'Configuration directory not found.';
+    
+    vscode.window.showWarningMessage(message);
+    return;
+  }
+
+  // Check if config needs updating (credentials changed or not configured)
+  let needsConfig = false;
+  let credentialsChanged = false;
+  try {
+    if (fs.existsSync(ideConfig.configPath)) {
+      const content = fs.readFileSync(ideConfig.configPath, 'utf8');
+      if (!content.includes('ekkos-memory') && !content.includes('ekkos')) {
+        needsConfig = true;
+      } else {
+        // Check if API key in config matches current user's API key
+        try {
+          const existingConfig = JSON.parse(content);
+          const existingApiKey = existingConfig?.mcpServers?.['ekkos-memory']?.env?.EKKOS_API_KEY;
+          if (existingApiKey && existingApiKey !== currentConfig.apiKey) {
+            needsConfig = true;
+            credentialsChanged = true;
+            console.log('[ekkOS Connect] Credentials changed - updating MCP config');
+          }
+        } catch {
+          // If parsing fails, re-deploy to be safe
+          needsConfig = true;
+        }
+      }
+    } else {
+      needsConfig = true;
+    }
+  } catch {
+    needsConfig = true;
+  }
+
+  if (!needsConfig) {
+    // Already configured with correct credentials, just verify connection
+    await checkIdeConnections();
+    return;
+  }
+
+  // Deploy to current IDE
+  try {
+    await deployToIde(ideConfig, currentConfig);
+    
+    // Update connection status
+    ideConnectionStatus.set(ideConfig.name, { 
+      status: 'checking', 
+      lastChecked: new Date() 
+    });
+    
+    // Show IDE-specific success message with auto-reload option for credential changes
+    if (credentialsChanged && (currentIDE === 'cursor' || currentIDE === 'vscode')) {
+      // Offer automatic window reload for VS Code-based IDEs
+      const selection = await vscode.window.showInformationMessage(
+        `✓ Account switched! MCP config updated for ${ideConfig.name}. Reload window to use new credentials?`,
+        'Reload Now',
+        'Later'
+      );
+      if (selection === 'Reload Now') {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    } else {
+      const restartMessage = currentIDE === 'windsurf'
+        ? 'Restart Windsurf to activate ekkOS memory.'
+        : currentIDE === 'cursor'
+        ? 'Reload Cursor window (Cmd+Shift+P → "Reload Window") to activate ekkOS memory.'
+        : credentialsChanged
+        ? 'Restart your IDE to use the new credentials.'
+        : 'Restart your IDE to activate ekkOS memory.';
+
+      vscode.window.showInformationMessage(
+        `✓ ${ideConfig.name} configured! ${restartMessage}`,
+        'View Status'
+      ).then(selection => {
+        if (selection === 'View Status') {
+          sidebarProvider?.refresh();
+        }
+      });
+    }
+  } catch (e: any) {
+    vscode.window.showErrorMessage(`Failed to configure ${ideConfig.name}: ${e.message}`);
+    ideConnectionStatus.set(ideConfig.name, { 
+      status: 'error', 
+      lastChecked: new Date(),
+      error: e.message 
+    });
+  }
+
+  // Verify connection after deployment
+  await checkIdeConnections();
+  sidebarProvider?.refresh();
 }
 
 async function deployMcpConfig() {
@@ -1014,7 +1470,7 @@ async function deployMcpConfig() {
     panel.appendLine('=== Next Steps ===');
     panel.appendLine('1. Restart your AI tool to load the MCP server');
     panel.appendLine('2. Test by asking: "Search my ekkOS memory for patterns"');
-    panel.appendLine('3. If issues persist, run: npx @ekkos/mcp-server (to test manually)');
+    panel.appendLine('3. If issues persist, run: npx -y @ekkos/mcp-server@latest (to test manually)');
     panel.show();
   } else if (selection === 'Test Connection') {
     await testMcpConnection();
@@ -1033,7 +1489,7 @@ async function testMcpConnection() {
   }
 
   try {
-    const response = await fetch(`${MCP_API_URL}/api/v1/health`, {
+    const response = await fetch(`${getMcpApiUrl()}/health`, {
       headers: {
         'Authorization': `Bearer ${currentConfig.apiKey}`
       }
@@ -1043,9 +1499,17 @@ async function testMcpConnection() {
       vscode.window.showInformationMessage(
         '✓ ekkOS MCP Gateway is healthy! Your AI tool should be able to connect after restart.'
       );
+    } else if (response.status === 404) {
+      vscode.window.showWarningMessage(
+        `MCP Gateway route not found (404). The API endpoint may have changed - try updating the extension.`
+      );
+    } else if (response.status === 401 || response.status === 403) {
+      vscode.window.showWarningMessage(
+        `MCP Gateway authentication failed (${response.status}). Check your API key at platform.ekkos.dev`
+      );
     } else {
       vscode.window.showWarningMessage(
-        `MCP Gateway returned status ${response.status}. Check your API key at platform.ekkos.dev`
+        `MCP Gateway returned status ${response.status}. Try again or check status at platform.ekkos.dev`
       );
     }
   } catch (error: any) {
@@ -1072,40 +1536,21 @@ async function deployToIde(ide: IDEConfig, config: EkkosConfig) {
   let finalConfig: any;
   let mcpConfig: any;
 
-  // Claude Code CLI and Claude Desktop both need command-based MCP server
-  const isClaudeBased = ide.name === 'Claude Code' || ide.name === 'Claude Desktop';
-
-  if (isClaudeBased) {
-    // Claude-based apps require command-based MCP server (not HTTP/SSE)
-    mcpConfig = {
-      mcpServers: {
-        'ekkos-memory': {
-          command: 'npx',
-          args: ['-y', '@ekkos/mcp-server'],
-          env: {
-            EKKOS_API_KEY: config.apiKey,
-            EKKOS_USER_ID: config.userId
-          }
+  // Use command-based MCP server for all IDEs
+  // This is more reliable and consistent across different IDE versions
+  // The @ekkos/mcp-server@latest only requires EKKOS_API_KEY (no infrastructure secrets)
+  mcpConfig = {
+    mcpServers: {
+      'ekkos-memory': {
+        command: 'npx',
+        args: ['-y', '@ekkos/mcp-server@latest'],
+        env: {
+          EKKOS_API_KEY: config.apiKey,
+          EKKOS_USER_ID: config.userId
         }
       }
-    };
-  } else {
-    // Cursor, Windsurf, etc. use HTTP/SSE transport
-    // Include API key in URL as query param (SSE clients often can't set headers)
-    const sseUrl = `${MCP_API_URL}/api/v1/mcp/sse?api_key=${encodeURIComponent(config.apiKey)}`;
-    mcpConfig = {
-      mcpServers: {
-        'ekkos-memory': {
-          url: sseUrl,
-          transport: 'sse',
-          headers: {
-            Authorization: `Bearer ${config.apiKey}`,
-            'X-User-ID': config.userId
-          }
-        }
-      }
-    };
-  }
+    }
+  };
 
   // Merge with existing config if present
   if (fs.existsSync(ide.configPath)) {
@@ -1131,7 +1576,7 @@ async function deployToIde(ide: IDEConfig, config: EkkosConfig) {
 
 /**
  * Deploy ekkOS MCP config to OpenAI Codex (TOML format)
- * Uses http_headers directly - no env var modification needed!
+ * Uses command-based config for consistency with other IDEs
  */
 async function deployToCodex(ide: IDEConfig, config: EkkosConfig) {
   const dir = path.dirname(ide.configPath);
@@ -1139,17 +1584,20 @@ async function deployToCodex(ide: IDEConfig, config: EkkosConfig) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // ekkOS MCP server config in TOML format
-  // Use http_headers for direct auth, with API key in URL as fallback
-  const sseUrlWithKey = `${MCP_API_URL}/api/v1/mcp/sse?api_key=${encodeURIComponent(config.apiKey)}`;
+  // ekkOS MCP server config in TOML format (command-based)
+  // Uses @ekkos/mcp-server@latest - only requires EKKOS_API_KEY
   const ekkosToml = `
 # ═══════════════════════════════════════════════════════════════════════════
 # ekkOS Memory - AI memory system with 10-layer architecture
 # https://ekkos.dev (configured by ekkOS Connect extension)
 # ═══════════════════════════════════════════════════════════════════════════
-[mcp_servers.ekkos]
-url = "${sseUrlWithKey}"
-http_headers = { "Authorization" = "Bearer ${config.apiKey}", "X-User-ID" = "${config.userId}" }
+[mcp_servers.ekkos-memory]
+command = "npx"
+args = ["-y", "@ekkos/mcp-server@latest"]
+
+[mcp_servers.ekkos-memory.env]
+EKKOS_API_KEY = "${config.apiKey}"
+EKKOS_USER_ID = "${config.userId}"
 `;
 
   let existingContent = '';
@@ -1157,11 +1605,11 @@ http_headers = { "Authorization" = "Bearer ${config.apiKey}", "X-User-ID" = "${c
     existingContent = fs.readFileSync(ide.configPath, 'utf8');
   }
 
-  // Check if ekkOS is already configured
-  if (existingContent.includes('[mcp_servers.ekkos]')) {
-    // Update existing config - replace the ekkos section
+  // Check if ekkOS is already configured (handle both old and new section names)
+  if (existingContent.includes('[mcp_servers.ekkos]') || existingContent.includes('[mcp_servers.ekkos-memory]')) {
+    // Update existing config - replace the ekkos section (handles both old and new names)
     const updatedContent = existingContent.replace(
-      /# ═+\n# ekkOS Memory[\s\S]*?\[mcp_servers\.ekkos\][\s\S]*?(?=\n\[|$)/,
+      /# ═+\n# ekkOS Memory[\s\S]*?\[mcp_servers\.ekkos(?:-memory)?\][\s\S]*?(?=\n\[|$)/,
       ekkosToml.trim()
     );
     fs.writeFileSync(ide.configPath, updatedContent);
@@ -1211,74 +1659,331 @@ async function deployAiInstructions() {
 }
 
 function getClaudeMdTemplate(): string {
-  return `# ekkOS Memory Integration
+  // Load from templates directory if available
+  const templatePath = path.join(__dirname, '..', 'templates', 'CLAUDE.md');
+  if (fs.existsSync(templatePath)) {
+    return fs.readFileSync(templatePath, 'utf8');
+  }
+  // Fallback inline template with correct tool names
+  return `# ekkOS Memory System
 
-This project uses ekkOS for AI memory and learning.
+You have access to **ekkOS memory** via 28 MCP tools.
 
-## Memory Commands
+## MANDATORY: Search Before Answering
+Before answering ANY technical question, call \`search_memory\` first.
 
-Use these MCP tools to interact with the memory system:
+## Core Tools
+- \`search_memory\` - Search all 11 memory layers
+- \`forge_pattern\` - Create pattern from solution
+- \`forge_directive\` - Create MUST/NEVER/PREFER/AVOID rules
+- \`record_outcome\` - Track if pattern worked
+- \`export_memory\` - Export your memory data (patterns, directives, plans)
+- \`import_memory\` - Import memory from backup
 
-- \`ekko\` - Search your memory for relevant patterns and solutions
-- \`crystallize\` - Save important decisions and patterns permanently
-- \`reflex\` - Validate suggestions against your history (Hallucination Firewall)
-- \`trace\` - Understand why a suggestion was made
-
-## Best Practices
-
-1. **Before starting work**: Search memory for relevant patterns
-2. **After solving problems**: Crystallize the solution for future use
-3. **When uncertain**: Use reflex to validate AI suggestions
-
-## Example Usage
-
-\`\`\`
-# Search for past solutions
-ekko "authentication issues"
-
-# Save a new pattern
-crystallize "Use Supabase Auth, not custom JWT"
-\`\`\`
+## Forge Triggers
+Call \`forge_pattern\` when you:
+- Fix a bug
+- Discover better approach
+- Get corrected by user
+- Find anti-pattern
 
 For more info: https://docs.ekkos.dev
 `;
 }
 
 function getCursorRulesTemplate(): string {
-  return `# ekkOS Memory Integration
+  // Load from modular templates directory (30-ekkos-core.mdc is the main rules file)
+  const templatePath = path.join(__dirname, '..', 'templates', 'rules', '30-ekkos-core.mdc');
+  if (fs.existsSync(templatePath)) {
+    return fs.readFileSync(templatePath, 'utf8');
+  }
+  // Fallback with correct tool names
+  return `# ekkOS Memory System
 
-You have access to the ekkOS memory system via MCP tools.
+You have access to **ekkOS memory** via 28 MCP tools.
 
-## Available Tools
+## MANDATORY: Search Before Answering
+Before answering ANY technical question, call \`search_memory\` first.
 
-- ekko: Search memory for patterns and solutions
-- crystallize: Save decisions and patterns permanently
-- reflex: Validate suggestions against past decisions
-- trace: Explain why suggestions were made
+## Core Tools
+- \`search_memory\` - Search all 11 memory layers
+- \`forge_pattern\` - Create pattern from solution
+- \`forge_directive\` - Create MUST/NEVER/PREFER/AVOID rules
+- \`export_memory\` - Export your memory for backup/sync
+- \`import_memory\` - Import memory from backup
 
-## Workflow
+## 11 Layers
+1. Working, 2. Episodic, 3. Semantic, 4. Patterns, 5. Procedural
+6. Collective, 7. Meta, 8. Codebase, 9. Directives, 10. Conflict, 11. Secrets
 
-1. Start by searching memory with ekko() for relevant context
-2. Apply patterns you find to your work
-3. When you discover something valuable, crystallize() it
-4. Use reflex() when uncertain about a suggestion
-
-## Memory Layers
-
-ekkOS has 10 memory layers:
-1. Working Memory (recent context)
-2. Episodic Memory (conversation history)
-3. Semantic Memory (compressed knowledge)
-4. Pattern Memory (reusable solutions)
-5. Procedural Memory (workflows)
-6. Collective Memory (team knowledge)
-7. Meta Memory (self-awareness)
-8. Codebase Memory (code embeddings)
-9. Directive Memory (MUST/NEVER rules)
-10. Conflict Resolution (priority decisions)
-
-For documentation: https://docs.ekkos.dev
+For docs: https://docs.ekkos.dev
 `;
+}
+
+function getWindsurfRulesTemplate(): string {
+  const templatePath = path.join(__dirname, '..', 'templates', 'windsurf-rules', 'ekkos-memory.md');
+  if (fs.existsSync(templatePath)) {
+    return fs.readFileSync(templatePath, 'utf8');
+  }
+  return getCursorRulesTemplate(); // Fallback to cursor rules
+}
+
+// ============ Full IDE Setup (MCP + Hooks + Rules) ============
+
+interface IdeSetupStatus {
+  mcp: boolean;
+  hooks: boolean;
+  rules: boolean;
+}
+
+async function getIdeSetupStatus(ideName: string): Promise<IdeSetupStatus> {
+  const status: IdeSetupStatus = { mcp: false, hooks: false, rules: false };
+  const homeDir = os.homedir();
+
+  if (ideName === 'Claude Code') {
+    // MCP config (Claude Code uses ~/.claude.json for MCP servers)
+    const mcpPath = path.join(homeDir, '.claude.json');
+    if (fs.existsSync(mcpPath)) {
+      try {
+        const content = fs.readFileSync(mcpPath, 'utf8');
+        status.mcp = content.includes('ekkos-memory') || content.includes('ekkos');
+      } catch {}
+    }
+    // Hooks
+    const hooksPath = path.join(homeDir, '.claude', 'hooks', 'user-prompt-submit.sh');
+    const hooksPathNode = path.join(homeDir, '.claude', 'hooks', 'user-prompt-submit.js');
+    status.hooks = fs.existsSync(hooksPath) || fs.existsSync(hooksPathNode);
+    // Rules (global CLAUDE.md)
+    const rulesPath = path.join(homeDir, '.claude', 'CLAUDE.md');
+    status.rules = fs.existsSync(rulesPath);
+  } else if (ideName === 'Cursor') {
+    // MCP config
+    const mcpPath = path.join(homeDir, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'saoudrizwan.claude-dev', 'settings', 'cline_mcp_settings.json');
+    if (fs.existsSync(mcpPath)) {
+      try {
+        const content = fs.readFileSync(mcpPath, 'utf8');
+        status.mcp = content.includes('ekkos-memory') || content.includes('ekkos');
+      } catch {}
+    }
+    // Hooks (Cursor uses .cursor/hooks/)
+    const hooksDir = path.join(homeDir, '.cursor', 'hooks');
+    const hooksPath = path.join(hooksDir, 'user-prompt-submit.sh');
+    status.hooks = fs.existsSync(hooksPath);
+    // Rules (global .cursorrules or .cursor/rules/)
+    const rulesPath = path.join(homeDir, '.cursor', 'rules', 'ekkos-memory.mdc');
+    const globalRules = path.join(homeDir, '.cursorrules');
+    status.rules = fs.existsSync(rulesPath) || (fs.existsSync(globalRules) && fs.readFileSync(globalRules, 'utf8').includes('ekkOS'));
+  } else if (ideName === 'Windsurf') {
+    // MCP config
+    const mcpPath = path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json');
+    if (fs.existsSync(mcpPath)) {
+      try {
+        const content = fs.readFileSync(mcpPath, 'utf8');
+        status.mcp = content.includes('ekkos-memory') || content.includes('ekkos');
+      } catch {}
+    }
+    // Windsurf Cascade Hooks (~/.codeium/windsurf/hooks/)
+    const hooksDir = path.join(homeDir, '.codeium', 'windsurf', 'hooks');
+    const hooksPath = path.join(hooksDir, 'ekkos-before-submit.sh');
+    status.hooks = fs.existsSync(hooksPath);
+    // Rules
+    const rulesPath = path.join(homeDir, '.windsurfrules');
+    status.rules = fs.existsSync(rulesPath) && fs.readFileSync(rulesPath, 'utf8').includes('ekkOS');
+  }
+
+  return status;
+}
+
+async function fullSetupForIde(ideName: string, config: EkkosConfig): Promise<{ success: boolean; message: string }> {
+  const homeDir = os.homedir();
+  const results: string[] = [];
+
+  try {
+    if (ideName === 'Claude Code') {
+      // 1. MCP Config
+      const ide = getIdeConfigs().find(i => i.name === 'Claude Code');
+      if (ide) {
+        await deployToIde(ide, config);
+        results.push('MCP ✓');
+      }
+
+      // 2. Hooks
+      const hooksDir = path.join(homeDir, '.claude', 'hooks');
+      const libDir = path.join(hooksDir, 'lib');
+      fs.mkdirSync(libDir, { recursive: true });
+
+      // Copy hook files from templates
+      const hookSrc = path.join(__dirname, '..', 'templates', 'hooks', 'user-prompt-submit.sh');
+      const stateSrc = path.join(__dirname, '..', 'templates', 'hooks', 'lib', 'state.sh');
+      const stopSrc = path.join(__dirname, '..', 'templates', 'hooks', 'stop.sh');
+
+      if (fs.existsSync(hookSrc)) {
+        fs.copyFileSync(hookSrc, path.join(hooksDir, 'user-prompt-submit.sh'));
+        fs.chmodSync(path.join(hooksDir, 'user-prompt-submit.sh'), 0o755);
+      }
+      if (fs.existsSync(stateSrc)) {
+        fs.copyFileSync(stateSrc, path.join(libDir, 'state.sh'));
+        fs.chmodSync(path.join(libDir, 'state.sh'), 0o755);
+      }
+      if (fs.existsSync(stopSrc)) {
+        fs.copyFileSync(stopSrc, path.join(hooksDir, 'stop.sh'));
+        fs.chmodSync(path.join(hooksDir, 'stop.sh'), 0o755);
+      }
+      results.push('Hooks ✓');
+
+      // 3. Global CLAUDE.md
+      const claudeMdPath = path.join(homeDir, '.claude', 'CLAUDE.md');
+      fs.writeFileSync(claudeMdPath, getClaudeMdTemplate());
+      results.push('Rules ✓');
+
+    } else if (ideName === 'Cursor') {
+      // 1. MCP Config
+      const ide = getIdeConfigs().find(i => i.name === 'Cursor');
+      if (ide) {
+        await deployToIde(ide, config);
+        results.push('MCP ✓');
+      }
+
+      // 2. Hooks (Cursor uses ~/.cursor/hooks.json + ~/.cursor/hooks/*.sh)
+      const cursorDir = path.join(homeDir, '.cursor');
+      const hooksDir = path.join(cursorDir, 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+
+      // Copy hook script
+      const hookScriptSrc = path.join(__dirname, '..', 'templates', 'cursor-hooks', 'before-submit-prompt.sh');
+      const hookScriptDest = path.join(hooksDir, 'ekkos-before-submit.sh');
+      if (fs.existsSync(hookScriptSrc)) {
+        fs.copyFileSync(hookScriptSrc, hookScriptDest);
+        fs.chmodSync(hookScriptDest, 0o755);
+      }
+
+      // Create/update hooks.json
+      const hooksJsonPath = path.join(cursorDir, 'hooks.json');
+      let hooksConfig: any = { version: 1, hooks: {} };
+      if (fs.existsSync(hooksJsonPath)) {
+        try {
+          hooksConfig = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
+        } catch {}
+      }
+      // Add beforeSubmitPrompt hook
+      if (!hooksConfig.hooks) hooksConfig.hooks = {};
+      if (!hooksConfig.hooks.beforeSubmitPrompt) hooksConfig.hooks.beforeSubmitPrompt = [];
+      // Check if ekkos hook already exists
+      const ekkosHookExists = hooksConfig.hooks.beforeSubmitPrompt.some(
+        (h: any) => h.command && h.command.includes('ekkos')
+      );
+      if (!ekkosHookExists) {
+        hooksConfig.hooks.beforeSubmitPrompt.push({
+          command: path.join(hooksDir, 'ekkos-before-submit.sh')
+        });
+      }
+      fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksConfig, null, 2));
+      results.push('Hooks ✓');
+
+      // 3. Rules (~/.cursor/rules/) - Modular .mdc files
+      const rulesDir = path.join(cursorDir, 'rules');
+      fs.mkdirSync(rulesDir, { recursive: true });
+      const ruleTemplates = ['00-hooks-contract.mdc', '30-ekkos-core.mdc', '31-ekkos-messages.mdc'];
+      for (const template of ruleTemplates) {
+        const source = path.join(__dirname, '..', 'templates', 'rules', template);
+        const dest = path.join(rulesDir, template);
+        if (fs.existsSync(source)) {
+          fs.copyFileSync(source, dest);
+        }
+      }
+      results.push('Rules ✓');
+
+    } else if (ideName === 'Windsurf') {
+      // 1. MCP Config
+      const ide = getIdeConfigs().find(i => i.name === 'Windsurf');
+      if (ide) {
+        await deployToIde(ide, config);
+        results.push('MCP ✓');
+      }
+
+      // 2. Windsurf Cascade Hooks (~/.codeium/windsurf/hooks.json + ~/.codeium/windsurf/hooks/*.sh)
+      const windsurfDir = path.join(homeDir, '.codeium', 'windsurf');
+      const hooksDir = path.join(windsurfDir, 'hooks');
+      fs.mkdirSync(hooksDir, { recursive: true });
+
+      // Copy hook script
+      const hookScriptSrc = path.join(__dirname, '..', 'templates', 'windsurf-hooks', 'before-submit-prompt.sh');
+      const hookScriptDest = path.join(hooksDir, 'ekkos-before-submit.sh');
+      if (fs.existsSync(hookScriptSrc)) {
+        fs.copyFileSync(hookScriptSrc, hookScriptDest);
+        fs.chmodSync(hookScriptDest, 0o755);
+      }
+
+      // Create/update hooks.json
+      const hooksJsonPath = path.join(windsurfDir, 'hooks.json');
+      let hooksConfig: any = { version: 1, hooks: {} };
+      if (fs.existsSync(hooksJsonPath)) {
+        try {
+          hooksConfig = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
+        } catch {}
+      }
+      // Add beforeSubmitPrompt hook
+      if (!hooksConfig.hooks) hooksConfig.hooks = {};
+      if (!hooksConfig.hooks.beforeSubmitPrompt) hooksConfig.hooks.beforeSubmitPrompt = [];
+      // Check if ekkos hook already exists
+      const ekkosHookExists = hooksConfig.hooks.beforeSubmitPrompt.some(
+        (h: any) => h.command && h.command.includes('ekkos')
+      );
+      if (!ekkosHookExists) {
+        hooksConfig.hooks.beforeSubmitPrompt.push({
+          command: path.join(hooksDir, 'ekkos-before-submit.sh')
+        });
+      }
+      fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksConfig, null, 2));
+      results.push('Hooks ✓');
+
+      // 3. Global rules
+      const rulesPath = path.join(homeDir, '.windsurfrules');
+      const rulesSrc = path.join(__dirname, '..', 'templates', 'windsurf-rules', 'ekkos-memory.md');
+      if (fs.existsSync(rulesSrc)) {
+        fs.copyFileSync(rulesSrc, rulesPath);
+      } else {
+        fs.writeFileSync(rulesPath, getWindsurfRulesTemplate());
+      }
+      results.push('Rules ✓');
+
+    } else if (ideName === 'Claude Desktop') {
+      // Claude Desktop - MCP Config only (no hooks/rules)
+      const claudeDesktopDir = path.join(homeDir, 'Library', 'Application Support', 'Claude');
+      const mcpConfigPath = path.join(claudeDesktopDir, 'claude_desktop_config.json');
+
+      // Ensure directory exists
+      if (!fs.existsSync(claudeDesktopDir)) {
+        fs.mkdirSync(claudeDesktopDir, { recursive: true });
+      }
+
+      // Create/update MCP config
+      let mcpConfig: any = { mcpServers: {} };
+      if (fs.existsSync(mcpConfigPath)) {
+        try {
+          mcpConfig = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8'));
+          if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+        } catch {}
+      }
+
+      // Add ekkos-memory server
+      mcpConfig.mcpServers['ekkos-memory'] = {
+        command: 'npx',
+        args: ['-y', '@ekkos/mcp-server@latest'],
+        env: {
+          EKKOS_API_KEY: config.apiKey,
+          EKKOS_USER_ID: config.userId
+        }
+      };
+
+      fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+      results.push('MCP ✓');
+    }
+
+    return { success: true, message: results.join(' | ') };
+  } catch (error: any) {
+    return { success: false, message: error.message };
+  }
 }
 
 // ============ Status Management ============
@@ -1286,15 +1991,15 @@ For documentation: https://docs.ekkos.dev
 function updateStatusBar() {
   if (currentConfig) {
     const scope = currentConfig.patternScope || 'both';
-    const scopeIcons = { both: '●', personal: 'P', collective: 'C' };
-    const scopeLabels = { both: 'Personal + Collective', personal: 'Personal Only', collective: 'Collective Only' };
+    const scopeIcons: Record<string, string> = { both: '●', personal: 'P', collective: 'C' };
+    const scopeLabels: Record<string, string> = { both: 'Personal + Collective', personal: 'Personal Only', collective: 'All Users' };
 
-    statusBarItem.text = `$(database) ekkOS [${scopeIcons[scope]}]`;
-    statusBarItem.tooltip = `Connected as ${currentConfig.email}\nPattern Scope: ${scopeLabels[scope]}\n\nClick to toggle scope`;
+    statusBarItem.text = `$(database) ekkOS_ [${scopeIcons[scope]}]`;
+    statusBarItem.tooltip = `Connected as ${currentConfig.email}\nScope: ${scopeLabels[scope]}\n\nClick to open settings`;
     statusBarItem.backgroundColor = undefined;
-    statusBarItem.command = 'ekkos.togglePatternScope'; // Make clickable
+    statusBarItem.command = 'ekkos.openSidebar';
   } else {
-    statusBarItem.text = '$(database) ekkOS: Connect';
+    statusBarItem.text = '$(database) ekkOS_';
     statusBarItem.tooltip = 'Click to connect to ekkOS';
     statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     statusBarItem.command = 'ekkos.openSidebar';
@@ -1310,13 +2015,24 @@ function updateStatusBar() {
 
 async function refreshStatus() {
   currentConfig = loadConfig();
+
+  // Fetch fresh activity data from API
+  const activity = await fetchActivity();
+  if (activity) {
+    currentActivity = activity;
+  }
+
+  // Also refresh connection status
+  await checkIdeConnections();
+  await checkSetupStatus();
+
   updateStatusBar();
   sidebarProvider?.refresh();
   vscode.window.showInformationMessage('ekkOS status refreshed');
 }
 
 function openDashboard() {
-  vscode.env.openExternal(vscode.Uri.parse(PLATFORM_URL));
+  vscode.env.openExternal(vscode.Uri.parse(getPlatformUrl()));
 }
 
 function openSidebar() {
@@ -1327,6 +2043,16 @@ function openSidebar() {
 
 class EkkosSidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
+  private _revealState: { apiKey: boolean; userId: boolean } = { apiKey: false, userId: false };
+
+  private _getNonce(): string {
+    let text = '';
+    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    for (let i = 0; i < 32; i++) {
+      text += possible.charAt(Math.floor(Math.random() * possible.length));
+    }
+    return text;
+  }
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -1353,7 +2079,20 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._getHtmlContent();
 
+    // Refresh activity when sidebar becomes visible (event-based, not polling)
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        fetchActivity().then(activity => {
+          if (activity) {
+            currentActivity = activity;
+            this.refresh();
+          }
+        });
+      }
+    });
+
     webviewView.webview.onDidReceiveMessage(async (message) => {
+      console.log('[ekkOS ext] received message:', message);
       switch (message.command) {
         case 'connect':
           vscode.commands.executeCommand('ekkos.connect');
@@ -1367,6 +2106,38 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         case 'deployMcp':
           vscode.commands.executeCommand('ekkos.deployMcp');
           break;
+        case 'deployToIde':
+          if (message.ideName && currentConfig) {
+            const allIdes = getIdeConfigs();
+            const ide = allIdes.find((c: IDEConfig) => c.name === message.ideName);
+            if (ide && ide.exists) {
+              deployToIde(ide, currentConfig).then(() => {
+                vscode.window.showInformationMessage(`✓ ekkOS Memory configured for ${ide.name}`);
+                checkIdeConnections();
+                sidebarProvider?.refresh();
+              }).catch((e: any) => {
+                vscode.window.showErrorMessage(`Failed to configure ${ide.name}: ${e.message}`);
+              });
+            } else {
+              vscode.window.showWarningMessage(`${message.ideName} is not installed on this system`);
+            }
+          }
+          break;
+        case 'fullSetupIde':
+          if (message.ideName && currentConfig) {
+            fullSetupForIde(message.ideName, currentConfig).then((result) => {
+              if (result.success) {
+                vscode.window.showInformationMessage(`✓ ${message.ideName} fully configured! ${result.message}`);
+              } else {
+                vscode.window.showErrorMessage(`Setup failed: ${result.message}`);
+              }
+              checkIdeConnections();
+              sidebarProvider?.refresh();
+            });
+          } else {
+            vscode.window.showWarningMessage('Please connect to ekkOS first');
+          }
+          break;
         case 'deployInstructions':
           vscode.commands.executeCommand('ekkos.deployInstructions');
           break;
@@ -1378,7 +2149,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           break;
         case 'openPlatform':
           // Open platform login page directly (supports Google OAuth)
-          vscode.env.openExternal(vscode.Uri.parse(`${PLATFORM_URL}/login`));
+          vscode.env.openExternal(vscode.Uri.parse(`${getPlatformUrl()}/login`));
           break;
         case 'openDocs':
           vscode.env.openExternal(vscode.Uri.parse('https://docs.ekkos.dev'));
@@ -1392,6 +2163,38 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         case 'showMessage':
           vscode.window.showInformationMessage(message.text);
           break;
+        case 'copyCredential':
+          if (currentConfig && message.field) {
+            const value = message.field === 'apiKey' ? currentConfig.apiKey : currentConfig.userId;
+            const label = message.field === 'apiKey' ? 'API Key' : 'User ID';
+            vscode.env.clipboard.writeText(value).then(() => {
+              vscode.window.showInformationMessage(`${label} copied to clipboard!`);
+            });
+          }
+          break;
+        case 'revealCredential':
+          // Security: Never send full credentials to webview
+          // Users can copy securely via copyCredential command
+          if (currentConfig && this._view) {
+            const field = message.field as 'apiKey' | 'userId';
+            if (field === 'apiKey' || field === 'userId') {
+              const value = field === 'apiKey' ? currentConfig.apiKey : currentConfig.userId;
+              // Track reveal state per field
+              this._revealState[field] = !this._revealState[field];
+              const revealed = this._revealState[field];
+              // Only show slightly more characters when "revealed", never the full value
+              const masked = value.substring(0, 8) + '...' + value.substring(value.length - 4);
+              const partialReveal = value.substring(0, 12) + '...' + value.substring(value.length - 6);
+              this._view.webview.postMessage({
+                command: 'credentialRevealed',
+                field: field,
+                revealed: revealed,
+                value: revealed ? partialReveal : masked,  // Never send full value
+                masked: masked
+              });
+            }
+          }
+          break;
         case 'checkConnections':
           checkIdeConnections();
           break;
@@ -1404,6 +2207,96 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         case 'manualApiKey':
           handleManualApiKey(message.apiKey, this._context);
           break;
+        case 'setScope':
+          if (currentConfig && message.scope) {
+            currentConfig.patternScope = message.scope;
+            await saveConfigAsync(currentConfig);
+            updateStatusBar();
+          }
+          break;
+        case 'setScopeAndRefresh':
+          if (currentConfig && message.scope) {
+            currentConfig.patternScope = message.scope;
+            await saveConfigAsync(currentConfig);
+            updateStatusBar();
+            // Fetch new activity with updated scope and refresh UI
+            fetchActivity().then(activity => {
+              if (activity) {
+                currentActivity = activity;
+                sidebarProvider?.refresh();
+              }
+            });
+          }
+          break;
+        case 'openConfigFile':
+          {
+            const homeDir = os.homedir();
+            let filePath: string | null = null;
+            let isDirectory = false;
+
+            const ide = message.ide as string;
+            const fileType = message.fileType as string;
+
+            if (ide === 'claude-code') {
+              if (fileType === 'mcp') {
+                filePath = path.join(homeDir, '.claude.json');
+              } else if (fileType === 'hooks') {
+                filePath = path.join(homeDir, '.claude', 'hooks');
+                isDirectory = true;
+              } else if (fileType === 'rules') {
+                filePath = path.join(homeDir, '.claude', 'CLAUDE.md');
+              }
+            } else if (ide === 'cursor') {
+              if (fileType === 'mcp') {
+                filePath = path.join(homeDir, '.cursor', 'mcp.json');
+              } else if (fileType === 'hooks') {
+                filePath = path.join(homeDir, '.cursor', 'hooks.json');
+              } else if (fileType === 'rules') {
+                filePath = path.join(homeDir, '.cursorrules');
+              }
+            } else if (ide === 'windsurf') {
+              if (fileType === 'mcp') {
+                filePath = path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json');
+              } else if (fileType === 'hooks') {
+                filePath = path.join(homeDir, '.codeium', 'windsurf', 'hooks.json');
+              } else if (fileType === 'rules') {
+                filePath = path.join(homeDir, '.windsurfrules');
+              }
+            } else if (ide === 'claude-desktop') {
+              if (fileType === 'mcp') {
+                if (process.platform === 'darwin') {
+                  filePath = path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+                } else if (process.platform === 'win32') {
+                  filePath = path.join(process.env.APPDATA || homeDir, 'Claude', 'claude_desktop_config.json');
+                } else {
+                  filePath = path.join(homeDir, '.config', 'Claude', 'claude_desktop_config.json');
+                }
+              }
+            }
+
+            if (filePath) {
+              if (isDirectory) {
+                // Open directory in file explorer / Finder
+                if (fs.existsSync(filePath)) {
+                  vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(filePath));
+                } else {
+                  vscode.window.showWarningMessage(`Directory not found: ${filePath}`);
+                }
+              } else {
+                // Open file in editor
+                if (fs.existsSync(filePath)) {
+                  vscode.workspace.openTextDocument(filePath).then(doc => {
+                    vscode.window.showTextDocument(doc);
+                  });
+                } else {
+                  vscode.window.showWarningMessage(`File not found: ${filePath}`);
+                }
+              }
+            } else {
+              vscode.window.showWarningMessage(`${fileType} not available for ${ide}`);
+            }
+          }
+          break;
       }
     });
   }
@@ -1414,6 +2307,12 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     const ideConfigs = getIdeConfigs();
     const setupStatus = getSetupStatus();
     const syncStatus = getSyncStatus();
+
+    // Generate nonce for CSP
+    const nonce = this._getNonce();
+
+    // Get extension version from package.json
+    const extensionVersion = this._context.extension.packageJSON.version || '0.0.0';
 
     // Get brain icon URI for webview
     const brainIconPath = vscode.Uri.joinPath(this._extensionUri, 'resources', 'ekkos-icon.svg');
@@ -1455,16 +2354,25 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
             <span>${activity.usage.ekkos.used} / ${activity.usage.ekkos.limit === -1 ? '∞' : activity.usage.ekkos.limit}</span>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill" style="width: ${activity.usage.ekkos.limit === -1 ? 0 : Math.min(100, (activity.usage.ekkos.used / activity.usage.ekkos.limit) * 100)}%"></div>
+            <div class="progress-fill" style="width: ${activity.usage.ekkos.limit <= 0 ? 0 : Math.min(100, (activity.usage.ekkos.used / activity.usage.ekkos.limit) * 100)}%"></div>
           </div>
         </div>
         <div class="usage-bar">
           <div class="usage-label">
-            <span>Crystallizations</span>
+            <span>Pattern Forging</span>
             <span>${activity.usage.crystallizations.used} / ${activity.usage.crystallizations.limit === -1 ? '∞' : activity.usage.crystallizations.limit}</span>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill" style="width: ${activity.usage.crystallizations.limit === -1 ? 0 : Math.min(100, (activity.usage.crystallizations.used / activity.usage.crystallizations.limit) * 100)}%"></div>
+            <div class="progress-fill" style="width: ${activity.usage.crystallizations.limit <= 0 ? 0 : Math.min(100, (activity.usage.crystallizations.used / activity.usage.crystallizations.limit) * 100)}%"></div>
+          </div>
+        </div>
+        <div class="usage-bar">
+          <div class="usage-label">
+            <span>API Requests</span>
+            <span>${activity.usage.apiRequests?.used ?? 0} / ${(activity.usage.apiRequests?.limit ?? 100) === -1 ? '∞' : (activity.usage.apiRequests?.limit ?? 100)}</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill api" style="width: ${(activity.usage.apiRequests?.limit ?? 100) <= 0 ? 0 : Math.min(100, ((activity.usage.apiRequests?.used ?? 0) / (activity.usage.apiRequests?.limit ?? 100)) * 100)}%"></div>
           </div>
         </div>
       </div>
@@ -1485,9 +2393,13 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
 
     // Golden Loop stats with fallback
     const loopStats = activity?.goldenLoop || { retrievals: 0, applications: 0, forged: 0, successRate: 0 };
+    // Use tier from API (database) as source of truth, fall back to local config
+    const userTier = (activity?.tier || config?.tier || 'free') as 'free' | 'pro' | 'team' | 'enterprise';
+    const isPremiumTier = userTier === 'enterprise' || userTier === 'team' || userTier === 'pro';
     const usageStats = activity?.usage || {
-      ekkos: { used: 0, limit: (config?.tier === 'enterprise' || config?.tier === 'team' || config?.tier === 'pro') ? -1 : 100 },
-      crystallizations: { used: 0, limit: (config?.tier === 'enterprise' || config?.tier === 'team' || config?.tier === 'pro') ? -1 : 50 }
+      ekkos: { used: 0, limit: isPremiumTier ? -1 : 100 },
+      crystallizations: { used: 0, limit: isPremiumTier ? -1 : 50 },
+      apiRequests: { used: 0, limit: isPremiumTier ? -1 : 100 }
     };
 
     // Calculate usage percentages for tier enforcement
@@ -1495,8 +2407,8 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     const crystallizePercent = usageStats.crystallizations.limit === -1 ? 0 : (usageStats.crystallizations.used / usageStats.crystallizations.limit) * 100;
     const ekkosStatus = ekkosPercent >= 100 ? 'exceeded' : ekkosPercent >= 80 ? 'warning' : 'normal';
     const crystallizeStatus = crystallizePercent >= 100 ? 'exceeded' : crystallizePercent >= 80 ? 'warning' : 'normal';
-    const showUpgradeBanner = config?.tier === 'free' && (ekkosPercent >= 80 || crystallizePercent >= 80);
-    const limitExceeded = config?.tier === 'free' && (ekkosPercent >= 100 || crystallizePercent >= 100);
+    const showUpgradeBanner = userTier === 'free' && (ekkosPercent >= 80 || crystallizePercent >= 80);
+    const limitExceeded = userTier === 'free' && (ekkosPercent >= 100 || crystallizePercent >= 100);
     const activityFeed = activity?.activityFeed || [];
 
     const connectedHtml = config ? `
@@ -1512,9 +2424,9 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       <!-- Logo Header -->
       <div class="section logo-header">
         <div class="brand-logo">
-          <img src="${brainIconUri}" width="48" height="48" alt="ekkOS Brain" style="filter: drop-shadow(0 0 8px rgba(139, 92, 246, 0.3));" />
+          <img src="${brainIconUri}" width="48" height="48" alt="ekkOS Brain" style="filter: brightness(0) invert(1) drop-shadow(0 0 8px rgba(255, 255, 255, 0.2));" />
           <div class="brand-text">
-            <div class="brand-name">ekkOS_™</div>
+            <div class="brand-name">ekkOS_™ <span class="version-badge">v${extensionVersion}</span></div>
             <div class="brand-tagline">Universal AI Memory Gateway</div>
           </div>
         </div>
@@ -1536,9 +2448,9 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <div class="user-avatar">${config.email.charAt(0).toUpperCase()}</div>
           <div class="user-details">
             <div class="user-email">${config.email}</div>
-            <div class="user-tier tier-${config.tier}">
-              <span class="tier-icon">${config.tier === 'enterprise' ? '👑' : config.tier === 'pro' ? '⭐' : config.tier === 'team' ? '🤝' : '🆓'}</span>
-              ${TIER_NAMES[config.tier] || config.tier.toUpperCase()}
+            <div class="user-tier tier-${userTier}">
+              <span class="tier-icon">${userTier === 'enterprise' ? '👑' : userTier === 'pro' ? '⭐' : userTier === 'team' ? '🤝' : '🆓'}</span>
+              ${TIER_NAMES[userTier] || userTier.toUpperCase()}
             </div>
           </div>
         </div>
@@ -1547,7 +2459,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       <div class="section golden-loop-section">
         <div class="section-header">
           <h3>🔄 Golden Loop</h3>
-          <button class="refresh-btn" onclick="refresh()" title="Refresh stats">↻</button>
+          <button class="refresh-btn" data-cmd="refresh" title="Refresh stats">↻</button>
         </div>
         <div class="loop-stats">
           <div class="stat stat-retrieve">
@@ -1577,6 +2489,63 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
 
+      <div class="section collective-section">
+        <h3>🌐 Pattern Library</h3>
+        <div class="collective-stats">
+          <div class="collective-main">
+            <span class="collective-total">${(activity?.collective?.displayTotal ?? activity?.collective?.total ?? 0).toLocaleString()}</span>
+            <span class="collective-label">${
+              config.patternScope === 'personal' ? 'your personal patterns' :
+              config.patternScope === 'collective' ? 'collective patterns (all users)' :
+              'total patterns available'
+            }</span>
+          </div>
+          <div class="collective-details">
+            <div class="collective-item">
+              <span class="collective-icon">👤</span>
+              <span class="collective-value">${(activity?.collective?.yourPatterns ?? 0).toLocaleString()}</span>
+              <span class="collective-sublabel">Personal</span>
+            </div>
+            <div class="collective-item">
+              <span class="collective-icon">🌐</span>
+              <span class="collective-value">${(activity?.collective?.total ?? 0).toLocaleString()}</span>
+              <span class="collective-sublabel">Collective</span>
+            </div>
+            <div class="collective-item">
+              <span class="collective-icon">🎁</span>
+              <span class="collective-value">${(activity?.collective?.yourContributions ?? 0).toLocaleString()}</span>
+              <span class="collective-sublabel">Contributed</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section scope-section">
+        <h3>🎯 Pattern Scope</h3>
+        <div class="scope-card">
+          <div class="scope-options">
+            <label class="scope-option ${config.patternScope === 'both' || !config.patternScope ? 'selected' : ''}">
+              <input type="radio" name="scope" value="both" ${config.patternScope === 'both' || !config.patternScope ? 'checked' : ''} data-cmd="setScope" data-scope="both">
+              <span class="scope-icon">●</span>
+              <span class="scope-label">Both</span>
+              <span class="scope-desc">Personal + Collective</span>
+            </label>
+            <label class="scope-option ${config.patternScope === 'personal' ? 'selected' : ''}">
+              <input type="radio" name="scope" value="personal" ${config.patternScope === 'personal' ? 'checked' : ''} data-cmd="setScope" data-scope="personal">
+              <span class="scope-icon">P</span>
+              <span class="scope-label">Personal</span>
+              <span class="scope-desc">Only your patterns</span>
+            </label>
+            <label class="scope-option ${config.patternScope === 'collective' ? 'selected' : ''}">
+              <input type="radio" name="scope" value="collective" ${config.patternScope === 'collective' ? 'checked' : ''} data-cmd="setScope" data-scope="collective">
+              <span class="scope-icon">C</span>
+              <span class="scope-label">Collective</span>
+              <span class="scope-desc">All users' patterns</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
       <div class="section usage-section">
         <h3>📊 Usage This Month</h3>
         <div class="usage-card ${limitExceeded ? 'limit-exceeded' : ''}">
@@ -1587,7 +2556,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
               <span class="usage-count ${ekkosStatus}">${usageStats.ekkos.used.toLocaleString()} / ${usageStats.ekkos.limit === -1 ? '∞' : usageStats.ekkos.limit.toLocaleString()}</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar-fill ${ekkosStatus}" style="width: ${usageStats.ekkos.limit === -1 ? 5 : Math.min(100, (usageStats.ekkos.used / usageStats.ekkos.limit) * 100)}%">
+              <div class="progress-bar-fill ${ekkosStatus}" style="width: ${usageStats.ekkos.limit <= 0 ? 5 : Math.min(100, (usageStats.ekkos.used / usageStats.ekkos.limit) * 100)}%">
                 <div class="progress-shimmer"></div>
               </div>
             </div>
@@ -1596,11 +2565,11 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <div class="usage-item ${crystallizeStatus}">
             <div class="usage-header">
               <span class="usage-icon">💎</span>
-              <span class="usage-name">Crystallizations</span>
+              <span class="usage-name">Pattern Forging</span>
               <span class="usage-count ${crystallizeStatus}">${usageStats.crystallizations.used.toLocaleString()} / ${usageStats.crystallizations.limit === -1 ? '∞' : usageStats.crystallizations.limit.toLocaleString()}</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar-fill crystallize ${crystallizeStatus}" style="width: ${usageStats.crystallizations.limit === -1 ? 5 : Math.min(100, (usageStats.crystallizations.used / usageStats.crystallizations.limit) * 100)}%">
+              <div class="progress-bar-fill crystallize ${crystallizeStatus}" style="width: ${usageStats.crystallizations.limit <= 0 ? 5 : Math.min(100, (usageStats.crystallizations.used / usageStats.crystallizations.limit) * 100)}%">
                 <div class="progress-shimmer"></div>
               </div>
             </div>
@@ -1643,73 +2612,155 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
 
-      <div class="section apikey-section">
-        <h3>🔑 Your API Key</h3>
-        <div class="apikey-card">
-          <div class="apikey-display">
-            <code class="apikey-value">${config.apiKey.substring(0, 8)}...${config.apiKey.substring(config.apiKey.length - 4)}</code>
-            <button class="copy-btn" onclick="copyApiKey('${config.apiKey}')" title="Copy API Key">
-              <span class="copy-icon">📋</span>
-            </button>
+      <div class="section credentials-section">
+        <h3>🔑 Your Credentials</h3>
+        <div class="credentials-card">
+          <div class="credential-row">
+            <span class="credential-label">API Key</span>
+            <div class="credential-value-row">
+              <code class="credential-value" id="apiKeyValue">${config.apiKey.substring(0, 8)}...${config.apiKey.substring(config.apiKey.length - 4)}</code>
+              <button class="copy-btn" data-cmd="copyCredential" data-field="apiKey" title="Copy API Key">
+                <span class="copy-icon">📋</span>
+              </button>
+              <button class="reveal-btn" data-cmd="revealCredential" data-field="apiKey" title="Show/Hide">
+                <span class="reveal-icon" id="apiKeyRevealIcon">👁</span>
+              </button>
+            </div>
           </div>
-          <div class="apikey-hint">Use this key to configure Claude Code, Cursor, Codex, or Windsurf</div>
+          <div class="credential-row">
+            <span class="credential-label">User ID</span>
+            <div class="credential-value-row">
+              <code class="credential-value" id="userIdValue">${config.userId.substring(0, 8)}...${config.userId.substring(config.userId.length - 4)}</code>
+              <button class="copy-btn" data-cmd="copyCredential" data-field="userId" title="Copy User ID">
+                <span class="copy-icon">📋</span>
+              </button>
+              <button class="reveal-btn" data-cmd="revealCredential" data-field="userId" title="Show/Hide">
+                <span class="reveal-icon" id="userIdRevealIcon">👁</span>
+              </button>
+            </div>
+          </div>
+          <div class="credentials-hint">
+            API Endpoint: <code style="font-size: 9px; background: rgba(139,92,246,0.1); padding: 2px 4px; border-radius: 3px;">${getMcpApiUrl()}</code><br/>
+            Use these to manually configure IDEs not auto-detected
+          </div>
         </div>
       </div>
 
-      <div class="section ide-section">
-        <h3>🖥️ AI Agent Status</h3>
-        <div class="ide-card">
-          ${ideConfigs.map(ide => {
-            const connStatus = getIdeConnectionStatus(ide.name);
-            let statusClass = 'not-installed';
-            let statusText = 'Not Found';
-            let statusIcon = '○';
+      <!-- CURRENT IDE - Prominent display -->
+      <div class="section current-ide-section">
+        ${(() => {
+          const currentIDE = detectCurrentIDE();
+          const ideNameMap: Record<string, string> = {
+            'windsurf': 'Windsurf',
+            'cursor': 'Cursor',
+            'claude-code': 'Claude Code',
+            'vscode': 'VS Code'
+          };
+          const ideIconMap: Record<string, string> = {
+            'Windsurf': '🏄',
+            'Cursor': '🖱️',
+            'Claude Code': '🤖',
+            'VS Code': '💻'
+          };
+          const currentIdeName = ideNameMap[currentIDE] || 'Unknown IDE';
+          const currentIcon = ideIconMap[currentIdeName] || '💻';
+          const currentIdeConfig = ideConfigs.find(ide => ide.name === currentIdeName || (currentIdeName === 'VS Code' && ide.name === 'Cursor'));
+          const currentStatus = currentIdeConfig ? getIdeConnectionStatus(currentIdeConfig.name) : { status: 'unknown' };
+          const isConfigured = currentStatus.status === 'configured';
 
-            if (!ide.exists) {
-              statusClass = 'not-installed';
-              statusText = 'Not Installed';
-              statusIcon = '○';
-            } else if (connStatus.status === 'connected') {
-              statusClass = 'connected';
-              statusText = 'Connected';
-              statusIcon = '●';
-            } else if (connStatus.status === 'error') {
-              statusClass = 'error';
-              statusText = 'Error';
-              statusIcon = '⚠';
-            } else if (connStatus.status === 'not-configured') {
-              statusClass = 'not-configured';
-              statusText = 'Not Configured';
-              statusIcon = '◐';
-            } else if (connStatus.status === 'checking') {
-              statusClass = 'checking';
-              statusText = 'Checking...';
-              statusIcon = '◌';
-            } else {
-              statusClass = 'unknown';
-              statusText = 'Click Deploy';
-              statusIcon = '◐';
-            }
+          return `
+            <div class="current-ide-header">
+              <h3>🎯 You're Using</h3>
+            </div>
+            <div class="current-ide-card ${isConfigured ? 'configured' : 'needs-setup'}">
+              <div class="current-ide-icon">${currentIcon}</div>
+              <div class="current-ide-info">
+                <div class="current-ide-name">${currentIdeName}</div>
+                <div class="current-ide-status ${isConfigured ? 'ok' : 'warn'}">
+                  ${isConfigured ? '✓ MCP + Hooks + Rules Ready' : '○ Needs Full Setup'}
+                </div>
+              </div>
+              <button class="btn ${isConfigured ? 'btn-secondary' : 'btn-primary btn-glow'}" data-cmd="fullSetupIde" data-idename="${currentIdeName}" style="margin-left: auto;">
+                ${isConfigured ? '⚙️ Reinstall' : '🚀 Full Setup'}
+              </button>
+            </div>
+            <div class="setup-details">
+              <span class="setup-badge">MCP</span>
+              <span class="setup-badge">Hooks</span>
+              <span class="setup-badge">Rules</span>
+            </div>
+          `;
+        })()}
+      </div>
 
-            return '<div class="ide-row"><span class="ide-name">' + ide.name + '</span><span class="ide-badge ' + statusClass + '"><span class="status-icon">' + statusIcon + '</span> ' + statusText + '</span></div>';
-          }).join('')}
+      <!-- OTHER IDEs - Expandable list -->
+      <div class="section other-ides-section">
+        <div class="section-header" data-cmd="toggleOtherIdes" style="cursor: pointer;">
+          <h3>📋 Other AI Editors</h3>
+          <span class="expand-icon" id="other-ides-toggle">▶</span>
         </div>
-        <div class="ide-actions">
-          <button class="btn btn-primary btn-glow" onclick="deployMcp()">
-            <span class="btn-icon">🚀</span>
-            Deploy MCP Config
-          </button>
-          <button class="btn btn-secondary" onclick="checkConnections()">
-            <span class="btn-icon">🔄</span>
-            Refresh Status
-          </button>
+        <div class="other-ides-list" id="other-ides-list" style="display: none;">
+          ${(() => {
+            const currentIDE = detectCurrentIDE();
+            const ideNameMap: Record<string, string> = {
+              'windsurf': 'Windsurf',
+              'cursor': 'Cursor',
+              'claude-code': 'Claude Code',
+              'vscode': 'VS Code'
+            };
+            const ideIconMap: Record<string, string> = {
+              'Windsurf': '🏄',
+              'Cursor': '🖱️',
+              'Claude Code': '🤖',
+              'VS Code': '💻'
+            };
+            const currentIdeName = ideNameMap[currentIDE];
+
+            // Filter out current IDE and show others
+            return ideConfigs.filter(ide => ide.name !== currentIdeName && !(currentIdeName === 'VS Code' && ide.name === 'Cursor')).map(ide => {
+              const connStatus = getIdeConnectionStatus(ide.name);
+              const icon = ideIconMap[ide.name] || '💻';
+              let statusClass = 'not-installed';
+              let statusText = 'Not Installed';
+              let showButton = false;
+
+              if (!ide.exists) {
+                statusClass = 'not-installed';
+                statusText = 'Not Installed';
+              } else if (connStatus.status === 'configured') {
+                statusClass = 'configured';
+                statusText = '✓ Ready';
+                showButton = true;
+              } else if (connStatus.status === 'not-configured') {
+                statusClass = 'not-configured';
+                statusText = 'Not Setup';
+                showButton = true;
+              } else {
+                statusClass = 'unknown';
+                statusText = 'Unknown';
+                showButton = ide.exists;
+              }
+
+              return `
+                <div class="other-ide-row">
+                  <span class="other-ide-icon">${icon}</span>
+                  <span class="other-ide-name">${ide.name}</span>
+                  <span class="other-ide-status ${statusClass}">${statusText}</span>
+                  ${showButton ? `<button class="btn-mini" data-cmd="fullSetupIde" data-idename="${ide.name}">${connStatus.status === 'configured' ? '⚙️' : '🚀'}</button>` : ''}
+                </div>
+              `;
+            }).join('');
+          })()}
+          <div class="other-ides-hint">
+            One-click: MCP + Hooks + Rules
+          </div>
         </div>
       </div>
 
       <div class="section setup-section">
         <div class="section-header">
           <h3>🔧 System Diagnostics</h3>
-          <button class="refresh-btn" onclick="runDiagnostics()" title="Run full diagnostics">⚡</button>
+          <button class="refresh-btn" data-cmd="runDiagnostics" title="Run full diagnostics">⚡</button>
         </div>
         <div class="diagnostic-grid">
           <div class="diagnostic-item ${setupStatus?.apiConnection?.status === 'connected' ? 'ok' : 'warn'}">
@@ -1717,69 +2768,63 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
             <span class="diag-label">API Connection</span>
             <span class="diag-value">${setupStatus?.apiConnection?.latency ? setupStatus.apiConnection.latency + 'ms' : (setupStatus?.apiConnection?.status || 'N/A')}</span>
           </div>
-          <div class="diagnostic-item ${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? 'ok' : 'warn'}">
-            <span class="diag-icon">${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? '✅' : '○'}</span>
-            <span class="diag-label">Global CLAUDE.md</span>
-            <span class="diag-value">${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? 'Active' : 'Not Set'}</span>
-          </div>
-          <div class="diagnostic-item ${setupStatus?.globalHooks?.claudeDir?.hasHooks ? 'ok' : 'warn'}">
-            <span class="diag-icon">${setupStatus?.globalHooks?.claudeDir?.hasHooks ? '✅' : '○'}</span>
-            <span class="diag-label">Global Hooks (~/.claude/)</span>
-            <span class="diag-value">${setupStatus?.globalHooks?.claudeDir?.hasHooks ? 'Active' : 'Not Set'}</span>
-          </div>
-          <div class="diagnostic-item ${setupStatus?.projectHooks?.claudeMd?.hasEkkos ? 'ok' : 'info'}">
-            <span class="diag-icon">${setupStatus?.projectHooks?.claudeMd?.hasEkkos ? '✅' : '○'}</span>
-            <span class="diag-label">Project CLAUDE.md</span>
-            <span class="diag-value">${setupStatus?.projectHooks?.claudeMd?.hasEkkos ? 'Active' : 'Optional'}</span>
-          </div>
-          <div class="diagnostic-item ${setupStatus?.projectHooks?.claudeDir?.hasHooks ? 'ok' : 'info'}">
-            <span class="diag-icon">${setupStatus?.projectHooks?.claudeDir?.hasHooks ? '✅' : '○'}</span>
-            <span class="diag-label">Project Hooks (.claude/)</span>
-            <span class="diag-value">${setupStatus?.projectHooks?.claudeDir?.hasHooks ? 'Active' : 'Optional'}</span>
-          </div>
-          <div class="diagnostic-item ${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? 'ok' : 'info'}">
-            <span class="diag-icon">${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? '✅' : '○'}</span>
-            <span class="diag-label">Cursor Rules</span>
-            <span class="diag-value">${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? 'Active' : 'Optional'}</span>
-          </div>
+          ${(() => {
+            const currentIDE = detectCurrentIDE();
+            const diagnostics: string[] = [];
+            
+            // Windsurf only needs MCP config (no hooks)
+            if (currentIDE === 'windsurf') {
+              const windsurfConfig = ideConfigs.find(ide => ide.name === 'Windsurf');
+              const windsurfStatus = windsurfConfig ? getIdeConnectionStatus('Windsurf') : { status: 'unknown' };
+              diagnostics.push(`
+                <div class="diagnostic-item ${windsurfStatus.status === 'configured' ? 'ok' : windsurfStatus.status === 'not-configured' ? 'warn' : 'info'}">
+                  <span class="diag-icon">${windsurfStatus.status === 'configured' ? '✅' : '○'}</span>
+                  <span class="diag-label">Windsurf MCP Config</span>
+                  <span class="diag-value">${windsurfStatus.status === 'configured' ? 'Active' : windsurfStatus.status === 'not-configured' ? 'Not Set' : 'Checking...'}</span>
+                </div>
+              `);
+              return diagnostics.join('');
+            }
+            
+            // Claude Code needs hooks - global only
+            if (currentIDE === 'claude-code') {
+              diagnostics.push(`
+                <div class="diagnostic-item ${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? 'ok' : 'warning'}">
+                  <span class="diag-icon">${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? '✅' : '⚠️'}</span>
+                  <span class="diag-label">Global CLAUDE.md</span>
+                  <span class="diag-value">${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? 'Active' : 'Not Setup'}</span>
+                </div>
+                <div class="diagnostic-item ${setupStatus?.globalHooks?.claudeDir?.hasHooks ? 'ok' : 'warning'}">
+                  <span class="diag-icon">${setupStatus?.globalHooks?.claudeDir?.hasHooks ? '✅' : '⚠️'}</span>
+                  <span class="diag-label">Global Hooks (~/.claude/)</span>
+                  <span class="diag-value">${setupStatus?.globalHooks?.claudeDir?.hasHooks ? 'Active' : 'Not Setup'}</span>
+                </div>
+              `);
+              return diagnostics.join('');
+            }
+            
+            // Cursor needs .cursorrules - only show global (recommended)
+            if (currentIDE === 'cursor') {
+              diagnostics.push(`
+                <div class="diagnostic-item ${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? 'ok' : 'warning'}">
+                  <span class="diag-icon">${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? '✅' : '⚠️'}</span>
+                  <span class="diag-label">Global .cursorrules</span>
+                  <span class="diag-value">${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? 'Active' : 'Not Setup'}</span>
+                </div>
+              `);
+              return diagnostics.join('');
+            }
+            
+            // VS Code or unknown - show minimal
+            return '';
+          })()}
         </div>
       </div>
 
       <div class="section actions-section">
-        <h3>⚡ Quick Setup</h3>
-
-        <div class="action-card action-card-primary" onclick="setupGlobal()">
-          <div class="action-card-icon">🌐</div>
-          <div class="action-card-content">
-            <div class="action-card-title">Setup Global Hooks (Recommended)</div>
-            <div class="action-card-desc">One-time setup - Claude Code hooks work for ALL projects automatically</div>
-          </div>
-          <div class="action-card-arrow">→</div>
-        </div>
-
-        <div class="action-card" onclick="setupProject()">
-          <div class="action-card-icon">📁</div>
-          <div class="action-card-content">
-            <div class="action-card-title">Setup This Project</div>
-            <div class="action-card-desc">Add Cursor rules + Claude hooks to current workspace (.cursor/ .claude/)</div>
-          </div>
-          <div class="action-card-arrow">→</div>
-        </div>
-
-        <div class="section-divider"></div>
-
         <h3>🛠️ Management</h3>
 
-        <div class="action-card" onclick="deployInstructions()">
-          <div class="action-card-icon">📝</div>
-          <div class="action-card-content">
-            <div class="action-card-title">Add CLAUDE.md to Project</div>
-            <div class="action-card-desc">Creates CLAUDE.md with ekkOS memory instructions for this project</div>
-          </div>
-          <div class="action-card-arrow">→</div>
-        </div>
-
-        <div class="action-card" onclick="openDashboard()">
+        <div class="action-card" data-cmd="openDashboard">
           <div class="action-card-icon">📊</div>
           <div class="action-card-content">
             <div class="action-card-title">Open Web Dashboard</div>
@@ -1788,7 +2833,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <div class="action-card-arrow">→</div>
         </div>
 
-        <div class="action-card action-card-help" onclick="openDocs()">
+        <div class="action-card action-card-help" data-cmd="openDocs">
           <div class="action-card-icon">📚</div>
           <div class="action-card-content">
             <div class="action-card-title">Documentation & Help</div>
@@ -1799,7 +2844,59 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
 
         <div class="section-divider"></div>
 
-        <button class="btn btn-ghost btn-disconnect" onclick="disconnect()">
+        <h3>📁 Config Files</h3>
+        <p class="config-files-desc">Open MCP, hooks, and rules files for each IDE</p>
+
+        <div class="config-files-grid">
+          <div class="config-ide-row">
+            <div class="config-ide-header">
+              <span class="config-ide-icon">🤖</span>
+              <span class="config-ide-name">Claude Code</span>
+            </div>
+            <div class="config-ide-buttons">
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="claude-code" data-filetype="mcp" title="~/.claude.json">MCP</button>
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="claude-code" data-filetype="hooks" title="~/.claude/hooks/">Hooks</button>
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="claude-code" data-filetype="rules" title="~/.claude/CLAUDE.md">Rules</button>
+            </div>
+          </div>
+          <div class="config-ide-row">
+            <div class="config-ide-header">
+              <span class="config-ide-icon">📝</span>
+              <span class="config-ide-name">Cursor</span>
+            </div>
+            <div class="config-ide-buttons">
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="cursor" data-filetype="mcp" title="~/.cursor/mcp.json">MCP</button>
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="cursor" data-filetype="hooks" title="~/.cursor/hooks.json">Hooks</button>
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="cursor" data-filetype="rules" title="~/.cursorrules">Rules</button>
+            </div>
+          </div>
+          <div class="config-ide-row">
+            <div class="config-ide-header">
+              <span class="config-ide-icon">🌊</span>
+              <span class="config-ide-name">Windsurf</span>
+            </div>
+            <div class="config-ide-buttons">
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="windsurf" data-filetype="mcp" title="~/.codeium/windsurf/mcp_config.json">MCP</button>
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="windsurf" data-filetype="hooks" title="~/.codeium/windsurf/hooks.json">Hooks</button>
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="windsurf" data-filetype="rules" title="~/.windsurfrules">Rules</button>
+            </div>
+          </div>
+          <div class="config-ide-row">
+            <div class="config-ide-header">
+              <span class="config-ide-icon">🖥️</span>
+              <span class="config-ide-name">Claude Desktop</span>
+            </div>
+            <div class="config-ide-buttons">
+              <button class="config-btn" data-cmd="openConfigFile" data-ide="claude-desktop" data-filetype="mcp" title="~/Library/Application Support/Claude/claude_desktop_config.json">MCP</button>
+              <button class="config-btn config-btn-disabled" disabled title="Claude Desktop doesn't support hooks">Hooks</button>
+              <button class="config-btn config-btn-disabled" disabled title="Claude Desktop doesn't support rules">Rules</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <button class="btn btn-ghost btn-disconnect" data-cmd="disconnect">
           <span class="disconnect-icon">⏏️</span> Disconnect Account
         </button>
       </div>
@@ -1815,60 +2912,109 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       <div class="section welcome">
         <div class="logo-container">
           <div class="logo-glow"></div>
-          <img src="${brainIconUri}" width="64" height="64" alt="ekkOS Brain" style="margin-bottom: 12px; filter: drop-shadow(0 0 12px rgba(139, 92, 246, 0.4));" />
+          <img src="${brainIconUri}" width="64" height="64" alt="ekkOS Brain" style="margin-bottom: 12px; filter: brightness(0) invert(1) drop-shadow(0 0 12px rgba(255, 255, 255, 0.3));" />
           <div class="logo-glow"></div>
-          <div class="logo">ekkOS_™</div>
+          <div class="logo">ekkOS_™ <span class="version-badge-welcome">v${extensionVersion}</span></div>
           <div class="logo-tagline">Universal AI Memory Gateway</div>
         </div>
 
         <div class="welcome-card">
-          <h2>Connect Your IDE</h2>
-          <p>Select your AI coding environment:</p>
-          <div class="ide-grid">
-            ${SUPPORTED_IDES.map(ide => `
-              <button class="ide-btn" onclick="connectWithIde('${ide.id}')">
-                <span class="ide-icon">${ide.icon}</span>
-                <span class="ide-label">${ide.name}</span>
-                <span class="ide-hover-effect"></span>
-              </button>
-            `).join('')}
-          </div>
+          ${(() => {
+            const currentIDE = detectCurrentIDE();
+            const ideInfo: Record<string, { name: string; icon: string; steps: string[] }> = {
+              'windsurf': { 
+                name: 'Windsurf', 
+                icon: '🌊', 
+                steps: [
+                  '1. Click "Connect with GitHub" below',
+                  '2. We\'ll configure Windsurf MCP automatically',
+                  '3. Restart Windsurf to activate'
+                ]
+              },
+              'cursor': { 
+                name: 'Cursor', 
+                icon: '🔵', 
+                steps: [
+                  '1. Click "Connect with GitHub" below',
+                  '2. We\'ll configure Cursor MCP automatically',
+                  '3. Reload Cursor window (Cmd+Shift+P → "Reload Window")'
+                ]
+              },
+              'claude-code': { 
+                name: 'Claude Code', 
+                icon: '💜', 
+                steps: [
+                  '1. Click "Connect with GitHub" below',
+                  '2. We\'ll configure Claude Code MCP automatically',
+                  '3. Restart Claude Code to activate'
+                ]
+              },
+              'vscode': { 
+                name: 'VS Code', 
+                icon: '💙', 
+                steps: [
+                  '1. Click "Connect with GitHub" below',
+                  '2. We\'ll configure VS Code MCP automatically',
+                  '3. Restart VS Code to activate'
+                ]
+              },
+              'unknown': { 
+                name: 'Your IDE', 
+                icon: '🖥️', 
+                steps: [
+                  '1. Click "Connect with GitHub" below',
+                  '2. We\'ll configure your IDE automatically',
+                  '3. Restart your IDE to activate'
+                ]
+              }
+            };
+            const info = ideInfo[currentIDE] || ideInfo['unknown'];
+            
+            return `
+              <div style="text-align: center; margin-bottom: 24px;">
+                <div style="font-size: 64px; margin-bottom: 16px;">${info.icon}</div>
+                <h2 style="margin-bottom: 8px;">Connect ${info.name}</h2>
+                <p style="color: var(--vscode-descriptionForeground); font-size: 13px;">3 simple steps to get started</p>
+              </div>
+              <div style="background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 8px; padding: 16px; margin: 20px 0;">
+                ${info.steps.map(step => `
+                  <div style="padding: 8px 0; color: var(--vscode-foreground); font-size: 13px;">${step}</div>
+                `).join('')}
+              </div>
+            `;
+          })()}
         </div>
 
-        <div class="features-preview">
-          <div class="feature">
-            <span class="feature-icon">🔄</span>
-            <span class="feature-text">Golden Loop Learning</span>
-          </div>
+        <div class="features-preview" style="margin: 24px 0;">
           <div class="feature">
             <span class="feature-icon">🧠</span>
-            <span class="feature-text">10-Layer Memory</span>
+            <span class="feature-text">Your AI remembers everything</span>
           </div>
           <div class="feature">
-            <span class="feature-icon">🛡️</span>
-            <span class="feature-text">Hallucination Firewall</span>
+            <span class="feature-icon">⚡</span>
+            <span class="feature-text">Automatic setup - no manual config</span>
           </div>
         </div>
 
         <div class="welcome-actions">
-          <button class="btn btn-primary btn-glow" onclick="openPlatform()" style="margin-bottom: 8px;">
-            <span class="btn-icon">🌐</span>
-            Open Platform (Login with Google)
+          <button class="btn btn-primary btn-glow" data-cmd="connect" style="margin-bottom: 12px; width: 100%; font-size: 14px; padding: 12px 24px;">
+            <span class="btn-icon">🚀</span>
+            Connect with GitHub
           </button>
-          <p class="hint">
-            Or <a href="https://platform.ekkos.dev/signup">create a free account →</a>
+          <p class="hint" style="margin-bottom: 16px;">
+            Quick setup: Login with GitHub → We configure everything automatically
           </p>
-        </div>
-
-        <div class="manual-apikey-section">
-          <div class="divider-with-text">
-            <span>or enter API key manually</span>
+          
+          <div class="divider-with-text" style="margin: 20px 0;">
+            <span>or use API key</span>
           </div>
           <div class="apikey-input-group">
             <input type="text" id="manualApiKey" placeholder="ekk_xxxxxxxx_xxxxx..." class="apikey-input" />
-            <button class="btn btn-secondary" onclick="submitApiKey()">Connect</button>
+            <button class="btn btn-secondary" data-cmd="submitApiKey">Connect</button>
           </div>
-          <p class="hint apikey-hint">Get your API key from <a href="https://platform.ekkos.dev/dashboard/settings?tab=api-keys" target="_blank">platform settings</a></p>
+          <p class="hint apikey-hint" style="font-size: 10px; margin-top: 8px;">
+            Get your API key from <a href="https://platform.ekkos.dev/dashboard/settings?tab=api-keys" target="_blank">platform settings</a>
+          </p>
         </div>
       </div>
     `;
@@ -1876,7 +3022,8 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     return `<!DOCTYPE html>
 <html>
 <head>
-  <style>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${this._view?.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${this._view?.webview.cspSource} https: data:;">
+  <style nonce="${nonce}">
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: var(--vscode-font-family);
@@ -2149,6 +3296,112 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     }
     .stat-label { font-size: 9px; color: var(--vscode-descriptionForeground); text-transform: uppercase; letter-spacing: 0.5px; }
 
+    /* ============ Collective Memory Section ============ */
+    .collective-section {
+      margin-top: 12px;
+    }
+    .section-header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .section-header-row h3 {
+      margin: 0;
+    }
+    .scope-toggle-mini {
+      display: flex;
+      gap: 4px;
+      background: var(--vscode-editor-background);
+      padding: 2px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-widget-border);
+    }
+    .scope-btn {
+      background: transparent;
+      border: none;
+      padding: 4px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      opacity: 0.5;
+      transition: all 0.2s ease;
+    }
+    .scope-btn:hover {
+      opacity: 0.8;
+      background: var(--vscode-button-secondaryBackground);
+    }
+    .scope-btn.active {
+      opacity: 1;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.3), rgba(6, 182, 212, 0.3));
+      box-shadow: 0 0 8px rgba(139, 92, 246, 0.3);
+    }
+    .scope-toggle-section {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+    .scope-label {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .collective-stats {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .collective-main {
+      text-align: center;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--vscode-widget-border);
+    }
+    .collective-total {
+      font-size: 32px;
+      font-weight: bold;
+      display: block;
+      background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .collective-label {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      display: block;
+      margin-top: 4px;
+    }
+    .collective-details {
+      display: flex;
+      justify-content: space-around;
+    }
+    .collective-item {
+      text-align: center;
+    }
+    .collective-icon {
+      font-size: 16px;
+      display: block;
+      margin-bottom: 2px;
+    }
+    .collective-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      display: block;
+    }
+    .collective-sublabel {
+      font-size: 9px;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
     /* ============ Usage Section ============ */
     .usage-card {
       background: var(--vscode-editor-background);
@@ -2181,9 +3434,13 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       position: relative;
       min-width: 4px;
       transition: width 0.5s ease;
+      overflow: hidden;
     }
     .progress-bar-fill.crystallize {
       background: linear-gradient(90deg, #8b5cf6, #ec4899);
+    }
+    .progress-bar-fill.api {
+      background: linear-gradient(90deg, #f59e0b, #f97316);
     }
     .progress-shimmer {
       position: absolute;
@@ -2327,87 +3584,307 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     .empty-text { font-size: 12px; font-weight: 500; margin-bottom: 4px; }
     .empty-hint { font-size: 10px; color: var(--vscode-descriptionForeground); }
 
-    /* ============ API Key Section ============ */
-    .apikey-card {
+    /* ============ Credentials Section ============ */
+    .credentials-card {
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-widget-border);
       border-radius: 10px;
       padding: 12px;
     }
-    .apikey-display {
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    .credential-row {
+      margin-bottom: 12px;
+    }
+    .credential-row:last-of-type {
       margin-bottom: 8px;
     }
-    .apikey-value {
+    .credential-label {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .credential-value-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .credential-value {
       flex: 1;
       font-family: monospace;
-      font-size: 12px;
+      font-size: 11px;
       background: rgba(139, 92, 246, 0.1);
-      padding: 8px 12px;
+      padding: 8px 10px;
       border-radius: 6px;
       border: 1px solid rgba(139, 92, 246, 0.2);
+      word-break: break-all;
     }
-    .copy-btn {
+    .copy-btn, .reveal-btn {
       background: linear-gradient(135deg, #06b6d4, #8b5cf6);
       border: none;
       color: white;
-      padding: 8px 12px;
+      padding: 6px 10px;
       border-radius: 6px;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 12px;
       transition: all 0.2s;
+      flex-shrink: 0;
     }
-    .copy-btn:hover {
+    .reveal-btn {
+      background: rgba(139, 92, 246, 0.2);
+      color: var(--vscode-foreground);
+    }
+    .copy-btn:hover, .reveal-btn:hover {
       transform: scale(1.05);
       box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
     }
-    .apikey-hint {
+    .reveal-btn:hover {
+      background: rgba(139, 92, 246, 0.3);
+    }
+    .credentials-hint {
       font-size: 10px;
       color: var(--vscode-descriptionForeground);
+      padding-top: 4px;
+      border-top: 1px solid var(--vscode-widget-border);
     }
 
-    /* ============ IDE Section ============ */
-    .ide-card {
+    /* ============ Scope Section ============ */
+    .scope-card {
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-widget-border);
       border-radius: 10px;
-      padding: 8px 12px;
-      margin-bottom: 10px;
+      padding: 8px;
     }
-    .ide-row {
+    .scope-options {
       display: flex;
-      justify-content: space-between;
+      gap: 6px;
+    }
+    .scope-option {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
       align-items: center;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--vscode-widget-border);
+      padding: 8px 4px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-widget-border);
+      cursor: pointer;
+      transition: all 0.2s;
+      background: transparent;
     }
-    .ide-row:last-child { border-bottom: none; }
-    .ide-name { font-size: 12px; }
-    .ide-badge {
-      font-size: 10px;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-weight: 500;
+    .scope-option:hover {
+      background: rgba(139, 92, 246, 0.1);
+      border-color: rgba(139, 92, 246, 0.3);
+    }
+    .scope-option.selected {
+      background: rgba(139, 92, 246, 0.15);
+      border-color: #8b5cf6;
+    }
+    .scope-option input[type="radio"] {
+      display: none;
+    }
+    .scope-icon {
+      font-size: 16px;
+      font-weight: bold;
+      color: #8b5cf6;
+      margin-bottom: 2px;
+    }
+    .scope-label {
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .scope-desc {
+      font-size: 9px;
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+    }
+
+    /* ============ Current IDE Section (Prominent) ============ */
+    .current-ide-section {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(6, 182, 212, 0.05));
+      border: 2px solid rgba(139, 92, 246, 0.3);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .current-ide-header h3 {
+      margin: 0 0 12px 0;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .current-ide-card {
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 12px;
+      padding: 12px;
+      background: var(--vscode-editor-background);
+      border-radius: 10px;
+      border: 1px solid var(--vscode-widget-border);
     }
-    .ide-badge .status-icon { font-size: 8px; }
-    .ide-badge.connected { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
-    .ide-badge.error { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-    .ide-badge.not-configured { background: rgba(234, 179, 8, 0.15); color: #eab308; }
-    .ide-badge.checking { background: rgba(6, 182, 212, 0.15); color: #06b6d4; }
-    .ide-badge.not-installed { background: rgba(107, 114, 128, 0.15); color: #6b7280; }
-    .ide-badge.unknown { background: rgba(107, 114, 128, 0.15); color: #6b7280; }
-    .ide-actions {
+    .current-ide-card.configured {
+      border-color: rgba(34, 197, 94, 0.4);
+      background: rgba(34, 197, 94, 0.05);
+    }
+    .current-ide-card.needs-setup {
+      border-color: rgba(234, 179, 8, 0.4);
+      background: rgba(234, 179, 8, 0.05);
+    }
+    .current-ide-icon {
+      font-size: 32px;
+      width: 48px;
+      height: 48px;
       display: flex;
-      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      background: rgba(139, 92, 246, 0.1);
+      border-radius: 10px;
     }
-    .ide-actions .btn {
+    .current-ide-info {
       flex: 1;
     }
+    .current-ide-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+    .current-ide-status {
+      font-size: 11px;
+      margin-top: 4px;
+    }
+    .current-ide-status.ok { color: #22c55e; }
+    .current-ide-status.warn { color: #eab308; }
+    .setup-details {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      justify-content: center;
+    }
+    .setup-badge {
+      font-size: 9px;
+      padding: 2px 8px;
+      background: rgba(139, 92, 246, 0.15);
+      color: rgba(139, 92, 246, 0.9);
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    /* ============ IDE Setup Grid ============ */
+    .ide-setup-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .ide-setup-card {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 8px;
+      padding: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+    .ide-setup-card:hover {
+      border-color: rgba(139, 92, 246, 0.5);
+      background: rgba(139, 92, 246, 0.05);
+      transform: translateY(-1px);
+    }
+    .ide-setup-icon {
+      font-size: 24px;
+      margin-bottom: 6px;
+    }
+    .ide-setup-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      margin-bottom: 6px;
+    }
+    .ide-setup-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: center;
+    }
+    .ide-setup-badges .setup-badge {
+      font-size: 8px;
+      padding: 1px 5px;
+    }
+
+    /* ============ Other IDEs Section (Collapsed) ============ */
+    .other-ides-section {
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .other-ides-section .section-header {
+      margin-bottom: 0;
+    }
+    .other-ides-section .section-header h3 {
+      font-size: 12px;
+      margin: 0;
+      color: var(--vscode-descriptionForeground);
+    }
+    .expand-icon {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      transition: transform 0.2s;
+    }
+    .expand-icon.expanded {
+      transform: rotate(90deg);
+    }
+    .other-ides-list {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--vscode-widget-border);
+    }
+    .other-ide-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 6px;
+      margin-bottom: 4px;
+    }
+    .other-ide-row:hover {
+      background: rgba(139, 92, 246, 0.05);
+    }
+    .other-ide-icon { font-size: 18px; width: 24px; text-align: center; }
+    .other-ide-name { flex: 1; font-size: 12px; font-weight: 500; }
+    .other-ide-status {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .other-ide-status.configured { color: #22c55e; background: rgba(34, 197, 94, 0.1); }
+    .other-ide-status.not-configured { color: #eab308; background: rgba(234, 179, 8, 0.1); }
+    .other-ide-status.not-installed { color: #6b7280; background: rgba(107, 114, 128, 0.1); }
+    .other-ide-status.unknown { color: #6b7280; background: rgba(107, 114, 128, 0.1); }
+    .btn-mini {
+      font-size: 12px;
+      padding: 4px 8px;
+      border: none;
+      background: rgba(139, 92, 246, 0.2);
+      color: var(--vscode-foreground);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .btn-mini:hover {
+      background: rgba(139, 92, 246, 0.4);
+    }
+    .other-ides-hint {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+      margin-top: 8px;
+      font-style: italic;
+    }
+
+    /* ============ Generic Button Styles ============ */
     .btn-secondary {
       background: var(--vscode-editor-background);
       color: var(--vscode-foreground);
@@ -2555,6 +4032,63 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       margin: 16px 0;
       opacity: 0.5;
     }
+    /* Config Files Section */
+    .config-files-desc {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin: 0 0 12px 0;
+    }
+    .config-files-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .config-ide-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+    }
+    .config-ide-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .config-ide-icon {
+      font-size: 14px;
+    }
+    .config-ide-name {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--vscode-foreground);
+    }
+    .config-ide-buttons {
+      display: flex;
+      gap: 4px;
+    }
+    .config-btn {
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 500;
+      border: 1px solid var(--vscode-button-border, var(--vscode-widget-border));
+      border-radius: 4px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .config-btn:hover:not(:disabled) {
+      background: var(--vscode-button-secondaryHoverBackground);
+      border-color: var(--vscode-focusBorder);
+    }
+    .config-btn:disabled,
+    .config-btn-disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
     .disconnect-icon {
       font-size: 12px;
     }
@@ -2647,6 +4181,20 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       -webkit-text-fill-color: transparent;
       animation: gradient-shift 5s ease infinite;
       line-height: 1.2;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .version-badge {
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(139, 92, 246, 0.2);
+      color: #8b5cf6;
+      -webkit-text-fill-color: #8b5cf6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      letter-spacing: 0.5px;
     }
     .brand-tagline {
       font-size: 10px;
@@ -2659,6 +4207,10 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
     .logo-container {
       margin-bottom: 24px;
       position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
     }
     .logo-glow {
       position: absolute;
@@ -2684,6 +4236,20 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       -webkit-text-fill-color: transparent;
       animation: gradient-shift 5s ease infinite;
       position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .version-badge-welcome {
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(139, 92, 246, 0.15);
+      color: #a78bfa;
+      -webkit-text-fill-color: #a78bfa;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      letter-spacing: 0.5px;
     }
     @keyframes gradient-shift {
       0%, 100% { background-position: 0% 50%; }
@@ -2840,27 +4406,163 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   ${connectedHtml}
-  <script>
+  <script nonce="${nonce}">
+    console.log('[ekkOS webview] boot');
     const vscode = acquireVsCodeApi();
+    console.log('[ekkOS webview] acquired vscode api');
+
+    // Global event delegation for data-cmd buttons (CSP-safe)
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-cmd]');
+      if (!el) return;
+      const command = el.getAttribute('data-cmd');
+      const ide = el.getAttribute('data-ide');
+      const filetype = el.getAttribute('data-filetype');
+      const ideName = el.getAttribute('data-idename');
+      const scope = el.getAttribute('data-scope');
+      const field = el.getAttribute('data-field');
+
+      // Handle local UI actions
+      if (command === 'toggleOtherIdes') {
+        const list = document.getElementById('other-ides-list');
+        const toggle = document.getElementById('other-ides-toggle');
+        if (list && toggle) {
+          const isHidden = list.style.display === 'none';
+          list.style.display = isHidden ? 'block' : 'none';
+          toggle.classList.toggle('expanded', isHidden);
+        }
+        return;
+      }
+
+      if (command === 'setScope' && scope) {
+        // Update UI immediately
+        document.querySelectorAll('.scope-option').forEach(opt => {
+          opt.classList.remove('selected');
+          if (opt.querySelector('input[value="' + scope + '"]')) {
+            opt.classList.add('selected');
+          }
+        });
+      }
+
+      if (command === 'submitApiKey') {
+        const input = document.getElementById('manualApiKey');
+        const apiKey = input ? input.value.trim() : '';
+        if (!apiKey) {
+          vscode.postMessage({ command: 'showMessage', text: 'Please enter an API key' });
+          return;
+        }
+        if (!apiKey.startsWith('ekk_')) {
+          vscode.postMessage({ command: 'showMessage', text: 'Invalid API key format. Should start with ekk_' });
+          return;
+        }
+        vscode.postMessage({ command: 'manualApiKey', apiKey });
+        return;
+      }
+
+      // Build message with optional params
+      const msg = { command };
+      if (ide) msg.ide = ide;
+      if (filetype) msg.fileType = filetype;
+      if (ideName) msg.ideName = ideName;
+      if (scope) msg.scope = scope;
+      if (field) msg.field = field;
+
+      console.log('[ekkOS webview] posting message:', msg);
+      vscode.postMessage(msg);
+    });
+
+    // Handle change events for radio/checkbox inputs (CSP-safe)
+    document.addEventListener('change', (e) => {
+      const el = e.target.closest('[data-cmd]');
+      if (!el) return;
+      const command = el.getAttribute('data-cmd');
+      const scope = el.getAttribute('data-scope');
+
+      if (command === 'setScope' && scope) {
+        // Update UI immediately
+        document.querySelectorAll('.scope-option').forEach(opt => {
+          opt.classList.remove('selected');
+          if (opt.querySelector('input[value="' + scope + '"]')) {
+            opt.classList.add('selected');
+          }
+        });
+        vscode.postMessage({ command: 'setScope', scope });
+      }
+    });
+
     function connect() { vscode.postMessage({ command: 'connect' }); }
     function connectWithIde(ideId) { vscode.postMessage({ command: 'connectWithIde', ideId }); }
     function disconnect() { vscode.postMessage({ command: 'disconnect' }); }
     function openPlatform() { vscode.postMessage({ command: 'openPlatform' }); }
     function deployMcp() { vscode.postMessage({ command: 'deployMcp' }); }
+    function deployToIde(ideName) { vscode.postMessage({ command: 'deployToIde', ideName }); }
+    function fullSetupIde(ideName) { vscode.postMessage({ command: 'fullSetupIde', ideName }); }
+    function toggleOtherIdes() {
+      const list = document.getElementById('other-ides-list');
+      const toggle = document.getElementById('other-ides-toggle');
+      if (list && toggle) {
+        const isHidden = list.style.display === 'none';
+        list.style.display = isHidden ? 'block' : 'none';
+        toggle.classList.toggle('expanded', isHidden);
+      }
+    }
     function deployInstructions() { vscode.postMessage({ command: 'deployInstructions' }); }
     function openDashboard() { vscode.postMessage({ command: 'openDashboard' }); }
     function openDocs() { vscode.postMessage({ command: 'openDocs' }); }
     function openExternal(url) { vscode.postMessage({ command: 'openExternal', url }); }
+    function openConfigFile(ide, fileType) { vscode.postMessage({ command: 'openConfigFile', ide, fileType }); }
     function refresh() { vscode.postMessage({ command: 'refresh' }); }
     function setupGlobal() { vscode.postMessage({ command: 'setupGlobal' }); }
     function setupProject() { vscode.postMessage({ command: 'setupRules' }); }
-    function copyApiKey(key) {
-      navigator.clipboard.writeText(key).then(() => {
-        vscode.postMessage({ command: 'showMessage', text: 'API key copied to clipboard!' });
-      }).catch(() => {
-        vscode.postMessage({ command: 'showMessage', text: 'Failed to copy API key' });
-      });
+    // Secure credential handling - credentials stay on extension host
+    function copyCredential(field) {
+      vscode.postMessage({ command: 'copyCredential', field: field });
     }
+
+    function revealCredential(field) {
+      vscode.postMessage({ command: 'revealCredential', field: field });
+    }
+
+    // Handle credential reveal response from extension
+    window.addEventListener('message', event => {
+      const message = event.data;
+      if (message.command === 'credentialRevealed') {
+        const valueEl = document.getElementById(message.field + 'Value');
+        const iconEl = document.getElementById(message.field + 'RevealIcon');
+        if (valueEl && iconEl) {
+          if (message.revealed) {
+            valueEl.textContent = message.value;
+            iconEl.textContent = '🙈';
+          } else {
+            valueEl.textContent = message.masked;
+            iconEl.textContent = '👁';
+          }
+        }
+      }
+    });
+
+    function setScope(scope) {
+      // Update UI immediately
+      document.querySelectorAll('.scope-option').forEach(opt => {
+        opt.classList.remove('selected');
+        if (opt.querySelector('input[value="' + scope + '"]')) {
+          opt.classList.add('selected');
+        }
+      });
+      // Send to extension
+      vscode.postMessage({ command: 'setScope', scope: scope });
+    }
+
+    function setScopeAndRefresh(scope, el) {
+      // Update toggle buttons immediately
+      document.querySelectorAll('.scope-btn').forEach(btn => btn.classList.remove('active'));
+      if (el) el.classList.add('active');
+      // Send to extension and request refresh
+      vscode.postMessage({ command: 'setScopeAndRefresh', scope: scope });
+    }
+
+    // Legacy alias for backwards compatibility
+    function copyApiKey(key) { copyToClipboard(key, 'API Key'); }
     function checkConnections() { vscode.postMessage({ command: 'checkConnections' }); }
     function runDiagnostics() { vscode.postMessage({ command: 'runDiagnostics' }); }
     function submitApiKey() {
@@ -2996,127 +4698,253 @@ async function checkAndSetupRules(context: vscode.ExtensionContext) {
  * Setup ekkOS rules and hooks in workspace
  */
 async function setupRules(context: vscode.ExtensionContext, workspaceRoot: string): Promise<boolean> {
-  const rulesDir = path.join(workspaceRoot, '.cursor', 'rules');
+  const currentIDE = detectCurrentIDE();
+  const extensionPath = context.extensionPath;
+
+  // Define paths
+  const cursorRulesDir = path.join(workspaceRoot, '.cursor', 'rules');
   const cursorHooksDir = path.join(workspaceRoot, '.cursor', 'hooks');
   const claudeHooksDir = path.join(workspaceRoot, '.claude', 'hooks');
   const claudeHooksLibDir = path.join(claudeHooksDir, 'lib');
+  const windsurfRulesDir = path.join(workspaceRoot, '.windsurf', 'rules');
+
+  // Track what was installed for the success message
+  const installed: string[] = [];
 
   try {
-    // Create directories
-    if (!fs.existsSync(rulesDir)) {
-      fs.mkdirSync(rulesDir, { recursive: true });
+    // ========== CURSOR (deploy only if Cursor or VS Code) ==========
+    if (currentIDE === 'cursor' || currentIDE === 'vscode') {
+      if (!fs.existsSync(cursorRulesDir)) {
+        fs.mkdirSync(cursorRulesDir, { recursive: true });
+      }
+      if (!fs.existsSync(cursorHooksDir)) {
+        fs.mkdirSync(cursorHooksDir, { recursive: true });
+      }
+
+      // Cursor rules - modular .mdc files for better organization and debugging
+      const ruleTemplates = ['00-hooks-contract.mdc', '30-ekkos-core.mdc', '31-ekkos-messages.mdc'];
+      for (const template of ruleTemplates) {
+        const source = path.join(extensionPath, 'templates', 'rules', template);
+        const dest = path.join(cursorRulesDir, template);
+        if (fs.existsSync(source)) {
+          fs.copyFileSync(source, dest);
+          console.log(`✓ Created Cursor rule: ${template}`);
+        }
+      }
+
+      installed.push('Cursor rules (.cursor/rules/)');
     }
-    if (!fs.existsSync(cursorHooksDir)) {
-      fs.mkdirSync(cursorHooksDir, { recursive: true });
+
+    // ========== WINDSURF (deploy only if Windsurf) ==========
+    if (currentIDE === 'windsurf') {
+      if (!fs.existsSync(windsurfRulesDir)) {
+        fs.mkdirSync(windsurfRulesDir, { recursive: true });
+      }
+
+      const windsurfRuleSource = path.join(extensionPath, 'templates', 'windsurf-rules', 'ekkos-memory.md');
+      const windsurfRuleDest = path.join(windsurfRulesDir, 'ekkos-memory.md');
+      if (fs.existsSync(windsurfRuleSource)) {
+        fs.copyFileSync(windsurfRuleSource, windsurfRuleDest);
+        console.log(`✓ Created Windsurf rule: ekkos-memory.md`);
+      }
+
+      installed.push('Windsurf rules (.windsurf/rules/)');
     }
-    if (!fs.existsSync(claudeHooksLibDir)) {
-      fs.mkdirSync(claudeHooksLibDir, { recursive: true });
-    }
 
-    const extensionPath = context.extensionPath;
+    // ========== PLATFORM DETECTION ==========
+    const isWindows = process.platform === 'win32';
 
-    // ========== CURSOR RULES ==========
-    const ruleTemplates = [
-      '00-hooks-contract.mdc',
-      '30-ekkos-core.mdc',
-      '31-ekkos-messages.mdc'
-    ];
-
-    for (const template of ruleTemplates) {
-      const source = path.join(extensionPath, 'templates', 'rules', template);
-      const dest = path.join(rulesDir, template);
-
-      if (fs.existsSync(source)) {
-        fs.copyFileSync(source, dest);
-        console.log(`✓ Created rule: ${template}`);
+    // Check if bash is available on Windows
+    let hasBash = !isWindows; // Unix systems always have bash
+    if (isWindows) {
+      try {
+        const { execSync } = require('child_process');
+        execSync('where bash', { stdio: 'ignore' });
+        hasBash = true;
+      } catch {
+        hasBash = false;
       }
     }
 
-    // ========== CURSOR HOOKS (v1.7+) ==========
-    const cursorHookSource = path.join(extensionPath, 'templates', 'cursor-hooks', 'before-submit-prompt.sh');
-    const cursorHookDest = path.join(cursorHooksDir, 'before-submit-prompt.sh');
-    if (fs.existsSync(cursorHookSource)) {
-      fs.copyFileSync(cursorHookSource, cursorHookDest);
-      fs.chmodSync(cursorHookDest, 0o755);
-      console.log(`✓ Created Cursor hook: before-submit-prompt.sh`);
-    }
+    // Use Node.js hooks when bash isn't available (more portable)
+    const useNodeHooks = isWindows && !hasBash;
 
-    // Create .cursor/hooks.json for Cursor 1.7+
-    const cursorHooksJsonPath = path.join(workspaceRoot, '.cursor', 'hooks.json');
-    if (!fs.existsSync(cursorHooksJsonPath)) {
-      const cursorHooksConfig = {
-        version: 1,
-        hooks: {
-          beforeSubmitPrompt: [
-            { command: "./.cursor/hooks/before-submit-prompt.sh" }
-          ]
+    // ========== CURSOR HOOKS (only for Cursor/VS Code) ==========
+    if (currentIDE === 'cursor' || currentIDE === 'vscode') {
+      const cursorHookSource = path.join(extensionPath, 'templates', 'cursor-hooks', 'before-submit-prompt.sh');
+      const cursorHookDest = path.join(cursorHooksDir, 'before-submit-prompt.sh');
+      if (fs.existsSync(cursorHookSource)) {
+        fs.copyFileSync(cursorHookSource, cursorHookDest);
+        // chmod only works on Unix-like systems
+        if (!isWindows) {
+          fs.chmodSync(cursorHookDest, 0o755);
         }
-      };
-      fs.writeFileSync(cursorHooksJsonPath, JSON.stringify(cursorHooksConfig, null, 2));
-      console.log(`✓ Created Cursor hooks.json`);
-    }
+        console.log(`✓ Created Cursor hook: before-submit-prompt.sh`);
+      }
 
-    // ========== CLAUDE CODE HOOKS ==========
-    const claudeHookTemplates = ['user-prompt-submit.sh', 'stop.sh'];
+      // Create .cursor/hooks.json for Cursor 1.7+
+      const cursorHooksJsonPath = path.join(workspaceRoot, '.cursor', 'hooks.json');
+      if (!fs.existsSync(cursorHooksJsonPath)) {
+        // On Windows without bash, use node.exe; with bash, use bash command
+        const hookCommand = isWindows
+          ? (hasBash ? "bash ./.cursor/hooks/before-submit-prompt.sh" : "node ./.cursor/hooks/before-submit-prompt.js")
+          : "./.cursor/hooks/before-submit-prompt.sh";
+        const cursorHooksConfig = {
+          version: 1,
+          hooks: {
+            beforeSubmitPrompt: [
+              { command: hookCommand }
+            ]
+          }
+        };
+        fs.writeFileSync(cursorHooksJsonPath, JSON.stringify(cursorHooksConfig, null, 2));
+        console.log(`✓ Created Cursor hooks.json`);
+      }
 
-    for (const template of claudeHookTemplates) {
-      const source = path.join(extensionPath, 'templates', 'hooks', template);
-      const dest = path.join(claudeHooksDir, template);
-
-      if (fs.existsSync(source)) {
-        fs.copyFileSync(source, dest);
-        fs.chmodSync(dest, 0o755);
-        console.log(`✓ Created Claude hook: ${template}`);
+      installed.push('Cursor hooks (.cursor/hooks/)');
+      if (isWindows && !hasBash) {
+        installed.push('ℹ️ Windows: Using Node.js hooks (bash not detected)');
       }
     }
 
-    // Copy Claude hook library
-    const libSource = path.join(extensionPath, 'templates', 'hooks', 'lib', 'state.sh');
-    const libDest = path.join(claudeHooksLibDir, 'state.sh');
-    if (fs.existsSync(libSource)) {
-      fs.copyFileSync(libSource, libDest);
-      fs.chmodSync(libDest, 0o755);
-      console.log(`✓ Created Claude hook lib: state.sh`);
-    }
+    // ========== CLAUDE CODE HOOKS (for Claude Code IDE or as standalone) ==========
+    if (currentIDE === 'claude-code' || currentIDE === 'unknown') {
+      if (!fs.existsSync(claudeHooksLibDir)) {
+        fs.mkdirSync(claudeHooksLibDir, { recursive: true });
+      }
 
-    // Create .claude/settings.json with ABSOLUTE paths (relative paths fail when cwd differs)
-    const claudeSettingsPath = path.join(workspaceRoot, '.claude', 'settings.json');
-    if (!fs.existsSync(claudeSettingsPath)) {
-      const claudeSettings = {
-        hooks: {
-          "user-prompt-submit": [{ matcher: "", hooks: [path.join(workspaceRoot, '.claude', 'hooks', 'user-prompt-submit.sh')] }],
-          "stop": [{ matcher: "", hooks: [path.join(workspaceRoot, '.claude', 'hooks', 'stop.sh')] }]
+      // Deploy shell hooks (always needed for macOS/Linux and Windows with bash)
+      const claudeHookTemplates = ['user-prompt-submit.sh', 'stop.sh'];
+      for (const template of claudeHookTemplates) {
+        const source = path.join(extensionPath, 'templates', 'hooks', template);
+        const dest = path.join(claudeHooksDir, template);
+        if (fs.existsSync(source)) {
+          fs.copyFileSync(source, dest);
+          // chmod only works on Unix-like systems
+          if (!isWindows) {
+            fs.chmodSync(dest, 0o755);
+          }
+          console.log(`✓ Created Claude hook: ${template}`);
         }
-      };
-      fs.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2));
-      console.log(`✓ Created Claude Code settings`);
+      }
+
+      // Copy Claude hook library (shell version)
+      const libSource = path.join(extensionPath, 'templates', 'hooks', 'lib', 'state.sh');
+      const libDest = path.join(claudeHooksLibDir, 'state.sh');
+      if (fs.existsSync(libSource)) {
+        fs.copyFileSync(libSource, libDest);
+        if (!isWindows) {
+          fs.chmodSync(libDest, 0o755);
+        }
+      }
+
+      // Deploy Node.js hooks (for Windows without bash)
+      if (useNodeHooks) {
+        const nodeHookTemplates = ['user-prompt-submit.js', 'stop.js'];
+        for (const template of nodeHookTemplates) {
+          const source = path.join(extensionPath, 'templates', 'hooks-node', template);
+          const dest = path.join(claudeHooksDir, template);
+          if (fs.existsSync(source)) {
+            fs.copyFileSync(source, dest);
+            console.log(`✓ Created Claude Node.js hook: ${template}`);
+          }
+        }
+
+        // Copy Node.js hook library
+        const nodeLibSource = path.join(extensionPath, 'templates', 'hooks-node', 'lib', 'state.js');
+        const nodeLibDest = path.join(claudeHooksLibDir, 'state.js');
+        if (fs.existsSync(nodeLibSource)) {
+          fs.copyFileSync(nodeLibSource, nodeLibDest);
+        }
+      }
+
+      // Create .claude/settings.json
+      const claudeSettingsPath = path.join(workspaceRoot, '.claude', 'settings.json');
+      if (!fs.existsSync(claudeSettingsPath)) {
+        let hookCommands: { submit: string; stop: string };
+
+        if (useNodeHooks) {
+          // Windows without bash: use Node.js hooks
+          hookCommands = {
+            submit: 'node ' + path.join(workspaceRoot, '.claude', 'hooks', 'user-prompt-submit.js'),
+            stop: 'node ' + path.join(workspaceRoot, '.claude', 'hooks', 'stop.js')
+          };
+        } else if (isWindows && hasBash) {
+          // Windows with bash: prefix with bash
+          hookCommands = {
+            submit: 'bash ' + path.join(workspaceRoot, '.claude', 'hooks', 'user-prompt-submit.sh'),
+            stop: 'bash ' + path.join(workspaceRoot, '.claude', 'hooks', 'stop.sh')
+          };
+        } else {
+          // macOS/Linux: use shell hooks directly
+          hookCommands = {
+            submit: path.join(workspaceRoot, '.claude', 'hooks', 'user-prompt-submit.sh'),
+            stop: path.join(workspaceRoot, '.claude', 'hooks', 'stop.sh')
+          };
+        }
+
+        const claudeSettings = {
+          hooks: {
+            "user-prompt-submit": [{ matcher: "", hooks: [hookCommands.submit] }],
+            "stop": [{ matcher: "", hooks: [hookCommands.stop] }]
+          }
+        };
+        fs.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2));
+      }
+
+      installed.push('Claude Code hooks (.claude/hooks/)');
+      if (useNodeHooks) {
+        installed.push('ℹ️ Windows: Using Node.js hooks (native, no bash needed)');
+      } else if (isWindows && hasBash) {
+        installed.push('ℹ️ Windows: Using bash hooks via Git Bash');
+      }
     }
 
-    // ========== CLAUDE.md (Project Instructions) ==========
+    // ========== CLAUDE.md (always deploy - works in all IDEs) ==========
     const claudeMdSource = path.join(extensionPath, 'templates', 'CLAUDE.md');
     const claudeMdDest = path.join(workspaceRoot, 'CLAUDE.md');
     if (fs.existsSync(claudeMdSource) && !fs.existsSync(claudeMdDest)) {
       fs.copyFileSync(claudeMdSource, claudeMdDest);
       console.log(`✓ Created CLAUDE.md (project instructions)`);
+      installed.push('CLAUDE.md (project instructions)');
     }
 
-    // Show success message
+    // ========== SUCCESS MESSAGE ==========
+    const ideNames: Record<string, string> = {
+      'cursor': 'Cursor',
+      'vscode': 'VS Code',
+      'windsurf': 'Windsurf',
+      'claude-code': 'Claude Code',
+      'unknown': 'your IDE'
+    };
+    const ideName = ideNames[currentIDE] || 'your IDE';
+
+    const buttons = [];
+    if (currentIDE === 'cursor' || currentIDE === 'vscode') {
+      buttons.push('View Rules');
+    } else if (currentIDE === 'windsurf') {
+      buttons.push('View Rules');
+    } else if (currentIDE === 'claude-code' || currentIDE === 'unknown') {
+      buttons.push('View Hooks');
+    }
+    buttons.push('Dismiss');
+
     const selection = await vscode.window.showInformationMessage(
-      '✅ ekkOS™ installed!\n\n' +
-      'Installed:\n' +
-      '• Cursor rules + hooks (.cursor/)\n' +
-      '• Claude Code hooks (.claude/)\n\n' +
-      'Golden Loop is now AUTOMATIC in both IDEs!',
-      'View Rules', 'View Cursor Hook', 'View Claude Hook', 'Dismiss'
+      `✅ ekkOS™ installed for ${ideName}!\n\n` +
+      `Installed:\n• ${installed.join('\n• ')}\n\n` +
+      'Golden Loop is now AUTOMATIC!',
+      ...buttons
     );
 
     if (selection === 'View Rules') {
-      const uri = vscode.Uri.file(path.join(rulesDir, '30-ekkos-core.mdc'));
-      await vscode.commands.executeCommand('vscode.open', uri);
-    } else if (selection === 'View Cursor Hook') {
-      const uri = vscode.Uri.file(cursorHookDest);
-      await vscode.commands.executeCommand('vscode.open', uri);
-    } else if (selection === 'View Claude Hook') {
+      if (currentIDE === 'windsurf') {
+        const uri = vscode.Uri.file(path.join(windsurfRulesDir, 'ekkos-memory.md'));
+        await vscode.commands.executeCommand('vscode.open', uri);
+      } else {
+        const uri = vscode.Uri.file(path.join(cursorRulesDir, 'ekkos-memory.md'));
+        await vscode.commands.executeCommand('vscode.open', uri);
+      }
+    } else if (selection === 'View Hooks') {
       const uri = vscode.Uri.file(path.join(claudeHooksDir, 'user-prompt-submit.sh'));
       await vscode.commands.executeCommand('vscode.open', uri);
     }
@@ -3213,7 +5041,8 @@ async function setupGlobalHooks(context: vscode.ExtensionContext): Promise<boole
       fs.mkdirSync(globalClaudeLibDir, { recursive: true });
     }
 
-    // Copy Claude Code hooks
+    // Copy Claude Code hooks (chmod only on Unix-like systems)
+    const isWindows = process.platform === 'win32';
     const claudeHookTemplates = ['user-prompt-submit.sh', 'stop.sh'];
     for (const template of claudeHookTemplates) {
       const source = path.join(extensionPath, 'templates', 'hooks', template);
@@ -3221,7 +5050,9 @@ async function setupGlobalHooks(context: vscode.ExtensionContext): Promise<boole
 
       if (fs.existsSync(source)) {
         fs.copyFileSync(source, dest);
-        fs.chmodSync(dest, 0o755);
+        if (!isWindows) {
+          fs.chmodSync(dest, 0o755);
+        }
         console.log(`✓ Created global Claude hook: ${template}`);
       }
     }
@@ -3231,7 +5062,9 @@ async function setupGlobalHooks(context: vscode.ExtensionContext): Promise<boole
     const libDest = path.join(globalClaudeLibDir, 'state.sh');
     if (fs.existsSync(libSource)) {
       fs.copyFileSync(libSource, libDest);
-      fs.chmodSync(libDest, 0o755);
+      if (!isWindows) {
+        fs.chmodSync(libDest, 0o755);
+      }
       console.log(`✓ Created global Claude hook lib: state.sh`);
     }
 
@@ -3243,27 +5076,47 @@ async function setupGlobalHooks(context: vscode.ExtensionContext): Promise<boole
       } catch { /* Use empty */ }
     }
 
-    // Use absolute paths - tilde (~) doesn't expand in all contexts
-    const homeDir = os.homedir();
+    // Use absolute paths - on Windows, prefix with bash for Git Bash/WSL
+    const hookPrefix = isWindows ? 'bash ' : '';
     claudeSettings.hooks = {
       ...claudeSettings.hooks,
-      "user-prompt-submit": [{ matcher: "", hooks: [path.join(homeDir, '.claude', 'hooks', 'user-prompt-submit.sh')] }],
-      "stop": [{ matcher: "", hooks: [path.join(homeDir, '.claude', 'hooks', 'stop.sh')] }]
+      "user-prompt-submit": [{ matcher: "", hooks: [hookPrefix + path.join(homeDir, '.claude', 'hooks', 'user-prompt-submit.sh')] }],
+      "stop": [{ matcher: "", hooks: [hookPrefix + path.join(homeDir, '.claude', 'hooks', 'stop.sh')] }]
     };
     fs.writeFileSync(globalClaudeSettingsPath, JSON.stringify(claudeSettings, null, 2));
     console.log(`✓ Updated global Claude settings`);
 
+    // Setup global .cursorrules for Cursor (at ~/.cursorrules)
+    const globalCursorrules = path.join(homeDir, '.cursorrules');
+    if (!fs.existsSync(globalCursorrules)) {
+      const cursorRulesContent = getCursorRulesTemplate();
+      fs.writeFileSync(globalCursorrules, cursorRulesContent);
+      console.log(`✓ Created global .cursorrules`);
+    } else {
+      // Check if it already has ekkOS
+      const existingContent = fs.readFileSync(globalCursorrules, 'utf8');
+      if (!existingContent.includes('ekkOS')) {
+        // Append ekkOS section
+        const cursorRulesContent = getCursorRulesTemplate();
+        fs.appendFileSync(globalCursorrules, '\n\n' + cursorRulesContent);
+        console.log(`✓ Updated global .cursorrules with ekkOS`);
+      }
+    }
+
     // Show success message
+    const windowsNote = isWindows ? '\n\n⚠️ Windows: Hooks require Git Bash or WSL to be installed.' : '';
     const selection = await vscode.window.showInformationMessage(
       '✅ ekkOS™ Global Hooks Installed!\n\n' +
-      'Claude Code hooks are now active for ALL projects.\n' +
-      'No per-project setup needed!\n\n' +
-      'Note: Cursor still requires per-project rules (.cursor/rules/).',
-      'Open Claude Settings', 'Dismiss'
+      'Claude Code hooks + global .cursorrules are now active.\n' +
+      'No per-project setup needed!' + windowsNote,
+      'Open Claude Settings', 'Open .cursorrules', 'Dismiss'
     );
 
     if (selection === 'Open Claude Settings') {
       const uri = vscode.Uri.file(globalClaudeSettingsPath);
+      await vscode.commands.executeCommand('vscode.open', uri);
+    } else if (selection === 'Open .cursorrules') {
+      const uri = vscode.Uri.file(globalCursorrules);
       await vscode.commands.executeCommand('vscode.open', uri);
     }
 
@@ -3275,9 +5128,140 @@ async function setupGlobalHooks(context: vscode.ExtensionContext): Promise<boole
   }
 }
 
+/**
+ * Register ekkOS Chat Participant for automatic pattern injection
+ * This intercepts chat requests and injects relevant patterns before the AI responds
+ */
+function registerChatParticipant(context: vscode.ExtensionContext) {
+  // Check if chat API is available (VS Code 1.90+)
+  if (!vscode.chat || !(vscode.chat as any).createChatParticipant) {
+    console.log('[ekkOS] Chat Participant API not available in this version');
+    console.log('[ekkOS] Falling back to MCP tools only');
+    vscode.window.showInformationMessage(
+      'ekkOS Connect: Chat participant (@ekkos) requires newer Cursor version. Using MCP tools instead.',
+      'Learn More'
+    ).then(selection => {
+      if (selection === 'Learn More') {
+        vscode.env.openExternal(vscode.Uri.parse('https://docs.ekkos.dev/integrations/cursor'));
+      }
+    });
+    return;
+  }
+
+  const participant = (vscode.chat as any).createChatParticipant('ekkos-connect.memory', async (
+    request: any,
+    context: any,
+    stream: any,
+    token: vscode.CancellationToken
+  ) => {
+    try {
+      // Get user's prompt
+      const userPrompt = request.prompt;
+
+      // Show progress
+      stream.progress('🧠 Retrieving patterns from ekkOS memory...');
+
+      // Retrieve patterns from ekkOS API
+      const config = loadConfig();
+      if (!config || !config.apiKey) {
+        stream.markdown('⚠️ ekkOS not connected. Click the ekkOS icon in the sidebar to connect your account.');
+        return {};
+      }
+
+      // Call /api/v1/context/retrieve
+      const response = await fetch(`${getMcpApiUrl()}/api/v1/context/retrieve`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          query: userPrompt,
+          user_id: config.userId,
+          session_id: 'vscode-chat',
+          max_per_layer: 5,
+          include_layers: ['working', 'episodic', 'semantic', 'patterns', 'procedural', 'collective', 'codebase', 'directives']
+        })
+      });
+
+      if (!response.ok) {
+        stream.markdown(`⚠️ Failed to retrieve patterns (${response.status})`);
+      } else {
+        const data = await response.json();
+        const patternCount = data.layers?.patterns?.length || 0;
+
+        if (patternCount > 0) {
+          // Build messages array with patterns prepended
+          const patternContext = data.formatted_context || '';
+          
+          // Show patterns to user
+          stream.markdown(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+          stream.markdown(`🧠 **ekkOS Memory**\n`);
+          stream.markdown(`✓ ${patternCount} patterns loaded\n`);
+          stream.markdown(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`);
+          stream.markdown(patternContext + '\n\n');
+          stream.markdown(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`);
+
+          // Build enhanced messages for language model
+          const messages = [
+            (vscode as any).LanguageModelChatMessage.User(`CONTEXT FROM ekkOS MEMORY:\n\n${patternContext}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nUSER QUESTION:\n${userPrompt}`)
+          ];
+
+          // Add conversation history
+          for (const historyItem of context.history) {
+            if (historyItem.participant === 'ekkos-connect.memory') {
+              // Only include our own history
+              if ((historyItem as any).prompt) {
+                messages.push((vscode as any).LanguageModelChatMessage.User((historyItem as any).prompt));
+              }
+            }
+          }
+
+          // Call language model with enhanced context
+          stream.progress('Generating response with ekkOS patterns...');
+          
+          const chatResponse = await request.model.sendRequest(messages, {}, token);
+
+          // Stream response
+          for await (const fragment of chatResponse.text) {
+            stream.markdown(fragment);
+          }
+
+        } else {
+          // No patterns found, just forward to model
+          stream.markdown('🔍 No patterns found. Responding without memory context.\n\n');
+          
+          const messages = [(vscode as any).LanguageModelChatMessage.User(userPrompt)];
+          const chatResponse = await request.model.sendRequest(messages, {}, token);
+          
+          for await (const fragment of chatResponse.text) {
+            stream.markdown(fragment);
+          }
+        }
+      }
+
+      return {};
+    } catch (error) {
+      stream.markdown(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return {};
+    }
+  });
+
+  // Set participant icon
+  const iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'ekkos-icon.svg');
+  participant.iconPath = iconPath;
+
+  context.subscriptions.push(participant);
+  console.log('[ekkOS] Chat participant registered: @ekkos');
+}
+
 export function deactivate() {
   statusBarItem?.dispose();
   stopActivityPolling();
 }
+
+
+
+
 
 

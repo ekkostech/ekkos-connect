@@ -1,11 +1,11 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# ekkOS_ Hook: BeforeSubmitPrompt (Cursor) - RETRIEVE + INJECT + CONTRACT
+# ekkOS_ Hook: BeforeSubmitPrompt (Windsurf Cascade) - RETRIEVE + INJECT + CONTRACT
 #
 # ARCHITECTURE: Dumb Hook, Smart Backend
 # ═══════════════════════════════════════════════════════════════════════════
 # This hook runs BEFORE the prompt is sent to the AI.
-# It is THE CANONICAL retrieval path for Cursor.
+# It is THE CANONICAL retrieval path for Windsurf.
 #
 # GOLDEN LOOP ENFORCEMENT:
 # - Writes turn contract as evidence of retrieval
@@ -18,7 +18,7 @@ set +e  # Don't exit on errors - be bulletproof
 # Get project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-STATE_DIR="$PROJECT_ROOT/.cursor/state"
+STATE_DIR="$PROJECT_ROOT/.windsurf/state"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
 # Load turn contract library
@@ -50,7 +50,7 @@ MODEL_INFO=$(echo "$INPUT" | jq -r '.model // ""' 2>/dev/null || echo "")
 
 # Generate session ID if not provided
 if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
-  SESSION_ID="cursor-$(date +%s)-$$"
+  SESSION_ID="windsurf-$(date +%s)-$$"
 fi
 
 # Skip if empty
@@ -95,12 +95,12 @@ if [ -z "$AUTH_TOKEN" ]; then
   # STRICT MODE: Block turn if no auth
   if is_strict_mode; then
     BLOCKER_MSG=$(get_strict_blocker_message)
-    write_turn_contract "$SESSION_ID" "false" "cursor" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
+    write_turn_contract "$SESSION_ID" "false" "windsurf" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
     echo "{\"continue\": false, \"user_message\": $(echo "$BLOCKER_MSG" | jq -R -s .)}"
     exit 0
   fi
 
-  write_turn_contract "$SESSION_ID" "false" "cursor" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
+  write_turn_contract "$SESSION_ID" "false" "windsurf" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
   echo '{"continue": true, "user_message": "[ekkOS] No auth token. Run ekkOS: Connect in VS Code."}'
   exit 0
 fi
@@ -114,14 +114,14 @@ MEMORY_API_URL="https://mcp.ekkos.dev"
 JSON_PAYLOAD=$(jq -n \
   --arg query "$PROMPT_TEXT" \
   --arg user_id "${USER_ID:-system}" \
-  --arg session "cursor-$SESSION_ID" \
+  --arg session "windsurf-$SESSION_ID" \
   '{
     query: $query,
     user_id: $user_id,
     session_id: $session,
     max_per_layer: 5,
     include_layers: ["working", "episodic", "semantic", "patterns", "procedural", "collective", "codebase", "directives"],
-    metadata: { source: "cursor-hook" }
+    metadata: { source: "windsurf-cascade-hook" }
   }' 2>/dev/null || echo '{}')
 
 API_RESPONSE=$(curl -s -X POST "$MEMORY_API_URL/api/v1/context/retrieve" \
@@ -138,7 +138,7 @@ else
   # STRICT MODE: Block turn if retrieval failed
   if is_strict_mode; then
     BLOCKER_MSG=$(get_strict_blocker_message)
-    write_turn_contract "$SESSION_ID" "false" "cursor" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
+    write_turn_contract "$SESSION_ID" "false" "windsurf" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
     echo "{\"continue\": false, \"user_message\": $(echo "$BLOCKER_MSG" | jq -R -s .)}"
     exit 0
   fi
@@ -158,9 +158,9 @@ RETRIEVED_DIRECTIVE_IDS=$(echo "$API_RESPONSE" | jq -r '.layers.directives // []
 # ═══════════════════════════════════════════════════════════════════════════
 # [ekkOS_CONTRACT] Write turn contract as evidence of retrieval
 # ═══════════════════════════════════════════════════════════════════════════
-write_turn_contract "$SESSION_ID" "$RETRIEVAL_OK" "cursor" "$RETRIEVED_PATTERN_IDS" "$RETRIEVED_DIRECTIVE_IDS" "$QUERY_HASH" "$PROJECT_ROOT"
+write_turn_contract "$SESSION_ID" "$RETRIEVAL_OK" "windsurf" "$RETRIEVED_PATTERN_IDS" "$RETRIEVED_DIRECTIVE_IDS" "$QUERY_HASH" "$PROJECT_ROOT"
 
-# Save session ID to state file for stop.sh
+# Save session ID to state file
 echo "$SESSION_ID" > "$STATE_DIR/current_session_id.txt" 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -219,7 +219,7 @@ End response with: 🧠 **ekkOS_™** · 📅 YYYY-MM-DD
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   fi
 
-  # Save patterns for stop.sh
+  # Save patterns for capture
   echo "$API_RESPONSE" | jq '.layers.patterns // []' > "$STATE_DIR/patterns-${SESSION_ID}.json" 2>/dev/null || true
 
   echo "{\"continue\": true, \"user_message\": $(echo "$MESSAGE" | jq -R -s .)}" | jq -c .

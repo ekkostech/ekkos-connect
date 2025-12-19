@@ -9,7 +9,10 @@
 # 2. RETRIEVE patterns for the NEW query - SECOND
 # 3. INJECT patterns into context for the AI to use - THIRD
 #
-# This ensures every turn is captured and patterns are always available.
+# GOLDEN LOOP ENFORCEMENT:
+# - Writes turn contract as evidence of retrieval
+# - In STRICT mode, blocks turn if retrieval fails
+# - Lists pattern IDs explicitly for PatternGuard validation
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Don't use set -e - we want graceful degradation
@@ -34,6 +37,11 @@ else
   :;
 fi
 
+# Load turn contract library
+if [ -f "$SCRIPT_DIR/lib/contract.sh" ]; then
+  source "$SCRIPT_DIR/lib/contract.sh" 2>/dev/null || true
+fi
+
 # Define fallback functions (in case state.sh didn't define them)
 if ! command -v save_patterns >/dev/null 2>&1; then
   save_patterns() { :; }
@@ -54,6 +62,20 @@ if ! command -v mark_turn_captured >/dev/null 2>&1; then
   mark_turn_captured() { :; }
 fi
 
+# Fallback contract functions if library didn't load
+if ! command -v write_turn_contract >/dev/null 2>&1; then
+  write_turn_contract() { return 0; }
+fi
+if ! command -v generate_query_hash >/dev/null 2>&1; then
+  generate_query_hash() { echo "$(date +%s)"; }
+fi
+if ! command -v is_strict_mode >/dev/null 2>&1; then
+  is_strict_mode() { [ "${EKKOS_STRICT:-0}" = "1" ]; }
+fi
+if ! command -v get_strict_blocker_message >/dev/null 2>&1; then
+  get_strict_blocker_message() { echo "⛔ EKKOS_STRICT: Retrieval failed - DO NOT ANSWER"; }
+fi
+
 # Read JSON input
 INPUT=$(cat)
 USER_QUERY=$(echo "$INPUT" | jq -r '.query // .message // .prompt // ""')
@@ -65,6 +87,9 @@ TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
 if [ -z "$USER_QUERY" ] || [ "$USER_QUERY" = "null" ]; then
   exit 0
 fi
+
+# Generate query hash for contract
+QUERY_HASH=$(generate_query_hash "$USER_QUERY")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Load auth token - PORTABLE: Check 3 sources in priority order
@@ -81,12 +106,12 @@ fi
 
 # 2. Then try project .env.local (for developers with service role key)
 if [ -z "$AUTH_TOKEN" ] && [ -f "$PROJECT_ROOT/.env.local" ]; then
-  AUTH_TOKEN=$(grep -E "^SUPABASE_SERVICE_ROLE_KEY=" "$PROJECT_ROOT/.env.local" | cut -d'=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+  AUTH_TOKEN=$(grep -E "^SUPABASE_SECRET_KEY=" "$PROJECT_ROOT/.env.local" | cut -d'=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
 fi
 
 # 3. Finally try environment variable (for CI/CD or manual setup)
 if [ -z "$AUTH_TOKEN" ]; then
-  AUTH_TOKEN="${SUPABASE_SERVICE_ROLE_KEY:-}"
+  AUTH_TOKEN="${SUPABASE_SECRET_KEY:-}"
 fi
 
 # Cloud API - ALWAYS use production (portable!)
@@ -101,6 +126,7 @@ YELLOW='\033[1;33m'
 MAGENTA='\033[0;35m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
+RED='\033[0;31m'
 DIM='\033[2m'
 BOLD='\033[1m'
 RESET='\033[0m'
@@ -183,10 +209,28 @@ fi
 # If gateway is slow, skip retrieval and continue (graceful degradation)
 echo -e "${MAGENTA}   🔍 Retrieve${RESET} ${DIM}searching memory substrate...${RESET}"
 
+# Track retrieval status for turn contract
+RETRIEVAL_OK="false"
+RETRIEVED_PATTERN_IDS=""
+RETRIEVED_DIRECTIVE_IDS=""
+
 # Skip retrieval if no auth token (don't block)
 if [ -z "$AUTH_TOKEN" ]; then
   echo -e "${DIM}   ⚠️  Retrieve${RESET} ${DIM}skipped (no auth)${RESET}"
   API_RESPONSE='{"error":"no_auth","formatted_context":"","layers":{"patterns":[],"directives":[]}}'
+
+  # STRICT MODE: Block turn if no auth
+  if is_strict_mode; then
+    echo ""
+    echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════════${RESET}"
+    get_strict_blocker_message
+    echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════════${RESET}"
+    echo ""
+
+    # Write failed contract
+    write_turn_contract "$SESSION_ID" "false" "claude-code" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
+    exit 0
+  fi
 else
   # Include user_id in payload if available (from ekkos-connect login)
   JSON_PAYLOAD=$(jq -n \
@@ -214,10 +258,26 @@ else
     -d "$JSON_PAYLOAD" \
     --connect-timeout 1 \
     --max-time 1 2>/dev/null || echo '{"error":"timeout","formatted_context":"","layers":{"patterns":[],"directives":[]}}')
-  
+
   # If we got a timeout or error, use empty results immediately
   if ! echo "$API_RESPONSE" | jq -e '.layers' >/dev/null 2>&1; then
     API_RESPONSE='{"error":"timeout","formatted_context":"","layers":{"patterns":[],"directives":[]}}'
+
+    # STRICT MODE: Block turn if retrieval failed
+    if is_strict_mode; then
+      echo -e "${RED}   ⛔ Retrieve${RESET} ${RED}FAILED - STRICT MODE BLOCKING${RESET}"
+      echo ""
+      echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════════${RESET}"
+      get_strict_blocker_message
+      echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════════${RESET}"
+      echo ""
+
+      # Write failed contract
+      write_turn_contract "$SESSION_ID" "false" "claude-code" "" "" "$QUERY_HASH" "$PROJECT_ROOT"
+      exit 0
+    fi
+  else
+    RETRIEVAL_OK="true"
   fi
 fi
 
@@ -228,6 +288,15 @@ EPISODIC_COUNT=$(echo "$API_RESPONSE" | jq '.layers.episodic // [] | length' 2>/
 PROCEDURAL_COUNT=$(echo "$API_RESPONSE" | jq '.layers.procedural // [] | length' 2>/dev/null || echo "0")
 CODEBASE_COUNT=$(echo "$API_RESPONSE" | jq '.layers.codebase // [] | length' 2>/dev/null || echo "0")
 TOTAL_COUNT=$((PATTERN_COUNT + DIRECTIVE_COUNT + EPISODIC_COUNT + PROCEDURAL_COUNT + CODEBASE_COUNT))
+
+# Extract pattern and directive IDs for turn contract
+RETRIEVED_PATTERN_IDS=$(echo "$API_RESPONSE" | jq -r '.layers.patterns // [] | map(.pattern_id // .id) | join(",")' 2>/dev/null || echo "")
+RETRIEVED_DIRECTIVE_IDS=$(echo "$API_RESPONSE" | jq -r '.layers.directives // [] | map(.directive_id // .id) | join(",")' 2>/dev/null || echo "")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_CONTRACT] Write turn contract as evidence of retrieval
+# ═══════════════════════════════════════════════════════════════════════════
+write_turn_contract "$SESSION_ID" "$RETRIEVAL_OK" "claude-code" "$RETRIEVED_PATTERN_IDS" "$RETRIEVED_DIRECTIVE_IDS" "$QUERY_HASH" "$PROJECT_ROOT"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # [ekkOS_INJECT] Output the formatted context from backend
@@ -247,6 +316,14 @@ if [ "$TOTAL_COUNT" -gt 0 ]; then
     # Patterns - the core proven solutions
     if [ "$PATTERN_COUNT" -gt 0 ]; then
       echo "## Pattern Memory (Layer 4) - Directive Compliant"
+      echo ""
+      echo "**PATTERNGUARD REQUIRED**: For EACH pattern below, you MUST output either:"
+      echo "- [ekkOS_SELECT] with id if you USE the pattern"
+      echo "- [ekkOS_SKIP] with id if you do NOT use the pattern"
+      echo ""
+      echo "Pattern IDs for acknowledgment:"
+      echo "$API_RESPONSE" | jq -r '.layers.patterns[:5][] | "- \(.pattern_id // .id)"' 2>/dev/null || true
+      echo ""
       echo "Proven solutions:"
       echo "$API_RESPONSE" | jq -r '.layers.patterns[:5][] | "\(.title // "Untitled")\n   Problem: \(.problem // "N/A" | .[0:200])\n   Solution: \(.solution // "N/A" | .[0:300])\n   Success Rate: \(.success_rate // 0)%\n"' 2>/dev/null || true
     fi
@@ -282,6 +359,30 @@ if [ "$TOTAL_COUNT" -gt 0 ]; then
       echo "$API_RESPONSE" | jq -r '.layers.codebase[:3][] | "   • \(.file_path // .title // "Code pattern")"' 2>/dev/null || true
       echo ""
     fi
+  fi
+
+  # MANDATORY PATTERNGUARD INSTRUCTION
+  if [ "$PATTERN_COUNT" -gt 0 ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════════"
+    echo "⚠️  PATTERNGUARD REQUIRED: You MUST acknowledge ALL $PATTERN_COUNT pattern(s) above."
+    echo ""
+    echo "Use this format for patterns you APPLY:"
+    echo "[ekkOS_SELECT]"
+    echo "- id: <pattern-uuid>"
+    echo "  reason: <why using>"
+    echo "  confidence: <0.0-1.0>"
+    echo "[/ekkOS_SELECT]"
+    echo ""
+    echo "Use this format for patterns you DO NOT use:"
+    echo "[ekkOS_SKIP]"
+    echo "- id: <pattern-uuid>"
+    echo "  reason: <why not relevant>"
+    echo "[/ekkOS_SKIP]"
+    echo ""
+    echo "Coverage MUST be 100% (all pattern IDs acknowledged)."
+    echo "════════════════════════════════════════════════════════════════════"
+    echo ""
   fi
 else
   echo -e "${DIM}   📭 Inject${RESET}  ${DIM}no matching patterns found${RESET}"

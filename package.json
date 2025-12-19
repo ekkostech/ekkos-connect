@@ -1,8 +1,8 @@
 {
   "name": "ekkos-connect",
   "displayName": "ekkOS_™ - Universal AI Memory Gateway",
-  "description": "Universal AI Memory Gateway - One-click setup for persistent memory across Cursor, Claude Code, VS Code, Windsurf, Codex with real-time diagnostics",
-  "version": "1.9.0",
+  "description": "Universal AI Memory Gateway - One-click setup for persistent memory across Cursor, Claude Code, VS Code, Windsurf, Codex with real-time diagnostics and automatic pattern injection via Chat Participant",
+  "version": "2.3.16",
   "publisher": "ekkostech",
   "repository": {
     "type": "git",
@@ -13,7 +13,7 @@
     "url": "https://github.com/ekkostech/ekkos-connect/issues"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.90.0"
   },
   "icon": "resources/icon.png",
   "categories": [
@@ -33,10 +33,33 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onUri"
+    "onUri",
+    "onChatParticipant:ekkos-connect.memory"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "ekkos-connect.memory",
+        "name": "ekkos",
+        "fullName": "ekkOS Memory",
+        "description": "AI with persistent memory across sessions",
+        "isSticky": false,
+        "disambiguation": [
+          {
+            "category": "technical_questions",
+            "description": "User asks technical questions, wants to debug code, needs architectural guidance, or wants the AI to remember past solutions and decisions.",
+            "examples": [
+              "How do I fix this authentication error?",
+              "What's the best way to structure this component?",
+              "Remember this pattern for future reference",
+              "Have we solved this before?",
+              "What did we decide about the database schema?"
+            ]
+          }
+        ]
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

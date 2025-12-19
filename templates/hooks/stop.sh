@@ -1,17 +1,19 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# ekkOS_ Hook: Stop (Claude Code) - SIMPLIFIED
+# ekkOS_ Hook: Stop (Claude Code) - ENFORCEMENT + CAPTURE
 #
 # ARCHITECTURE: Dumb Hook, Smart Backend
 # ═══════════════════════════════════════════════════════════════════════════
-# This hook just CAPTURES data. All intelligence runs in the backend:
-# - Pattern detection (semantic, not text matching)
-# - Success judgment (LLM-based)
-# - Outcome recording
-# - Auto-forging new patterns
+# This hook does THREE things:
+# 1. VALIDATE compliance (PatternGuard coverage, footer presence)
+# 2. CAPTURE data and send to backend for async analysis
+# 3. RECORD outcomes with compliance metadata
 #
-# The capture endpoint triggers async analysis. The hook doesn't wait.
-# This makes the hook fast and reliable.
+# GOLDEN LOOP ENFORCEMENT:
+# - Loads turn contract written at retrieval time
+# - Validates PatternGuard coverage (100% required if patterns retrieved)
+# - Validates footer presence
+# - Records violations and auto-forges anti-patterns
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Don't use set -e here - we want graceful degradation
@@ -22,6 +24,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# Load turn contract library
+if [ -f "$SCRIPT_DIR/lib/contract.sh" ]; then
+  source "$SCRIPT_DIR/lib/contract.sh" 2>/dev/null || true
+fi
+
+# Fallback functions if library didn't load
+if ! command -v read_turn_contract >/dev/null 2>&1; then
+  read_turn_contract() { return 1; }
+fi
+if ! command -v get_contract_field >/dev/null 2>&1; then
+  get_contract_field() { echo ""; }
+fi
+if ! command -v get_contract_array >/dev/null 2>&1; then
+  get_contract_array() { echo ""; }
+fi
+if ! command -v calculate_pattern_guard_coverage >/dev/null 2>&1; then
+  calculate_pattern_guard_coverage() { echo "100"; }
+fi
+if ! command -v check_footer_present >/dev/null 2>&1; then
+  check_footer_present() { echo "true"; }
+fi
+if ! command -v build_compliance_metadata >/dev/null 2>&1; then
+  build_compliance_metadata() { echo '{}'; }
+fi
+if ! command -v cleanup_turn_contract >/dev/null 2>&1; then
+  cleanup_turn_contract() { :; }
+fi
+if ! command -v is_turn_compliant >/dev/null 2>&1; then
+  is_turn_compliant() { echo "true"; }
+fi
+if ! command -v get_violation_reason >/dev/null 2>&1; then
+  get_violation_reason() { echo "none"; }
+fi
 
 # Read JSON input
 INPUT=$(cat)
@@ -45,12 +81,12 @@ fi
 
 # 2. Then try project .env.local (for developers with service role key)
 if [ -z "$AUTH_TOKEN" ] && [ -f "$PROJECT_ROOT/.env.local" ]; then
-  AUTH_TOKEN=$(grep -E "^SUPABASE_SERVICE_ROLE_KEY=" "$PROJECT_ROOT/.env.local" | cut -d'=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+  AUTH_TOKEN=$(grep -E "^SUPABASE_SECRET_KEY=" "$PROJECT_ROOT/.env.local" | cut -d'=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
 fi
 
 # 3. Finally try environment variable (for CI/CD or manual setup)
 if [ -z "$AUTH_TOKEN" ]; then
-  AUTH_TOKEN="${SUPABASE_SERVICE_ROLE_KEY:-}"
+  AUTH_TOKEN="${SUPABASE_SECRET_KEY:-}"
 fi
 
 # Skip if no auth found
@@ -97,80 +133,88 @@ if [ -f "$PATTERNS_FILE" ]; then
   PATTERN_IDS=$(echo "$PATTERNS" | jq -r '[.[].id // .[].pattern_id] | join(",")' 2>/dev/null || echo "")
   MODEL_USED=$(echo "$STORED_DATA" | jq -r '.model_used // "claude-sonnet-4-5"' 2>/dev/null || echo "claude-sonnet-4-5")
   TASK_ID=$(echo "$STORED_DATA" | jq -r '.task_id // ""' 2>/dev/null || echo "")
+fi
 
-  # PATTERN ACKNOWLEDGMENT DETECTION (PatternGuard)
-  # 1. [ekkOS_SELECT] - patterns that were applied (preferred)
-  # 2. [ekkOS_SKIP] - patterns explicitly skipped (new)
-  # 3. [ekkOS_APPLY] - legacy marker (fallback)
-  # Coverage = (applied + skipped) / total retrieved
-  if [ -n "$LAST_ASSISTANT" ] && [ "$PATTERN_COUNT" -gt 0 ]; then
-    APPLIED_IDS=""
-    SKIPPED_IDS=""
+# ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_CONTRACT] Load turn contract from retrieval phase
+# ═══════════════════════════════════════════════════════════════════════════
+CONTRACT_JSON=""
+RETRIEVAL_OK="false"
+CONTRACT_PATTERN_IDS=""
 
-    # Check for structured [ekkOS_SELECT] block (applied patterns)
-    SELECT_BLOCK=$(echo "$LAST_ASSISTANT" | grep -ozP '\[ekkOS_SELECT\][\s\S]*?\[/ekkOS_SELECT\]' 2>/dev/null | tr '\0' '\n' || true)
+CONTRACT_JSON=$(read_turn_contract "$SESSION_ID" "claude-code" "$PROJECT_ROOT")
+if [ -n "$CONTRACT_JSON" ]; then
+  RETRIEVAL_OK=$(get_contract_field "$CONTRACT_JSON" "retrieval_ok")
+  CONTRACT_PATTERN_IDS=$(get_contract_array "$CONTRACT_JSON" "retrieved_pattern_ids")
+  EKKOS_STRICT_FROM_CONTRACT=$(get_contract_field "$CONTRACT_JSON" "ekkos_strict")
 
-    if [ -n "$SELECT_BLOCK" ]; then
-      # Extract pattern IDs from YAML-like format: "- id: <uuid>"
-      SELECTED_IDS=$(echo "$SELECT_BLOCK" | grep -oE 'id:\s*[a-f0-9-]+' | sed 's/id:\s*//' || true)
-
-      for pid in $SELECTED_IDS; do
-        # Validate it's a real UUID (or short ID)
-        if [ -n "$pid" ] && [ ${#pid} -ge 8 ]; then
-          APPLIED_IDS="${APPLIED_IDS}${pid},"
-          echo "[ekkOS_SELECT] Applied: ${pid:0:8}..." >&2
-        fi
-      done
-    fi
-
-    # NEW: Check for [ekkOS_SKIP] block (skipped patterns with reason)
-    SKIP_BLOCK=$(echo "$LAST_ASSISTANT" | grep -ozP '\[ekkOS_SKIP\][\s\S]*?\[/ekkOS_SKIP\]' 2>/dev/null | tr '\0' '\n' || true)
-
-    if [ -n "$SKIP_BLOCK" ]; then
-      # Extract skipped pattern IDs
-      SKIP_IDS=$(echo "$SKIP_BLOCK" | grep -oE 'id:\s*[a-f0-9-]+' | sed 's/id:\s*//' || true)
-
-      for pid in $SKIP_IDS; do
-        if [ -n "$pid" ] && [ ${#pid} -ge 8 ]; then
-          SKIPPED_IDS="${SKIPPED_IDS}${pid},"
-          echo "[ekkOS_SKIP] Skipped: ${pid:0:8}..." >&2
-        fi
-      done
-    fi
-
-    # Calculate coverage (PatternGuard metric)
-    TOTAL_RETRIEVED=$PATTERN_COUNT
-    APPLIED_COUNT=$(echo "$APPLIED_IDS" | tr ',' '\n' | grep -c '.' || echo 0)
-    SKIPPED_COUNT=$(echo "$SKIPPED_IDS" | tr ',' '\n' | grep -c '.' || echo 0)
-    ACKNOWLEDGED=$((APPLIED_COUNT + SKIPPED_COUNT))
-
-    if [ "$TOTAL_RETRIEVED" -gt 0 ]; then
-      COVERAGE=$((ACKNOWLEDGED * 100 / TOTAL_RETRIEVED))
-      if [ "$COVERAGE" -lt 100 ]; then
-        echo -e "${YELLOW}[PatternGuard] Coverage: ${COVERAGE}% (${ACKNOWLEDGED}/${TOTAL_RETRIEVED} patterns acknowledged)${RESET}" >&2
-      else
-        echo -e "${GREEN}[PatternGuard] 100% coverage - all patterns acknowledged${RESET}" >&2
-      fi
-    fi
-
-    # LEGACY: Check for [ekkOS_APPLY] markers (fallback if no SELECT block)
-    if [ -z "$APPLIED_IDS" ] && [ -z "$SKIPPED_IDS" ]; then
-      for pattern in $(echo "$PATTERNS" | jq -c '.[]'); do
-        TITLE=$(echo "$pattern" | jq -r '.title // ""')
-        PID=$(echo "$pattern" | jq -r '.id // .pattern_id // ""')
-
-        # Only count as applied if AI explicitly marked it with [ekkOS_APPLY]
-        if echo "$LAST_ASSISTANT" | grep -qF "[ekkOS_APPLY]" && echo "$LAST_ASSISTANT" | grep -qF "$TITLE"; then
-          APPLIED_IDS="${APPLIED_IDS}${PID},"
-          echo "[ekkOS_APPLY_DETECTED] Pattern: \"$TITLE\"" >&2
-        fi
-      done
-    fi
-
-    APPLIED_PATTERN_IDS=$(echo "$APPLIED_IDS" | sed 's/,$//')
-    SKIPPED_PATTERN_IDS=$(echo "$SKIPPED_IDS" | sed 's/,$//')
+  # Use contract pattern IDs if available (more accurate than state file)
+  if [ -n "$CONTRACT_PATTERN_IDS" ]; then
+    PATTERN_IDS="$CONTRACT_PATTERN_IDS"
+    PATTERN_COUNT=$(echo "$PATTERN_IDS" | tr ',' '\n' | grep -c '.' || echo 0)
   fi
 fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_VALIDATE] PatternGuard Compliance Check
+# ═══════════════════════════════════════════════════════════════════════════
+PATTERN_GUARD_COVERAGE=100
+APPLIED_IDS=""
+SKIPPED_IDS=""
+
+if [ -n "$LAST_ASSISTANT" ] && [ "$PATTERN_COUNT" -gt 0 ]; then
+  # Calculate PatternGuard coverage
+  PATTERN_GUARD_COVERAGE=$(calculate_pattern_guard_coverage "$LAST_ASSISTANT" "$PATTERN_IDS")
+
+  # Extract applied IDs from [ekkOS_SELECT] block
+  SELECT_BLOCK=$(echo "$LAST_ASSISTANT" | grep -ozP '\[ekkOS_SELECT\][\s\S]*?\[/ekkOS_SELECT\]' 2>/dev/null | tr '\0' '\n' || true)
+  if [ -n "$SELECT_BLOCK" ]; then
+    APPLIED_IDS=$(echo "$SELECT_BLOCK" | grep -oE 'id:\s*[a-f0-9-]+' | sed 's/id:\s*//' | tr '\n' ',' | sed 's/,$//' || true)
+  fi
+
+  # Extract skipped IDs from [ekkOS_SKIP] block
+  SKIP_BLOCK=$(echo "$LAST_ASSISTANT" | grep -ozP '\[ekkOS_SKIP\][\s\S]*?\[/ekkOS_SKIP\]' 2>/dev/null | tr '\0' '\n' || true)
+  if [ -n "$SKIP_BLOCK" ]; then
+    SKIPPED_IDS=$(echo "$SKIP_BLOCK" | grep -oE 'id:\s*[a-f0-9-]+' | sed 's/id:\s*//' | tr '\n' ',' | sed 's/,$//' || true)
+  fi
+
+  # Legacy: Check for [ekkOS_APPLY] markers (fallback)
+  if [ -z "$APPLIED_IDS" ] && [ -z "$SKIPPED_IDS" ]; then
+    if [ -f "$PATTERNS_FILE" ]; then
+      for pattern in $(echo "$PATTERNS" | jq -c '.[]' 2>/dev/null); do
+        TITLE=$(echo "$pattern" | jq -r '.title // ""')
+        PID=$(echo "$pattern" | jq -r '.id // .pattern_id // ""')
+        if echo "$LAST_ASSISTANT" | grep -qF "[ekkOS_APPLY]" && echo "$LAST_ASSISTANT" | grep -qF "$TITLE"; then
+          APPLIED_IDS="${APPLIED_IDS}${PID},"
+        fi
+      done
+      APPLIED_IDS=$(echo "$APPLIED_IDS" | sed 's/,$//')
+    fi
+  fi
+fi
+
+APPLIED_PATTERN_IDS="$APPLIED_IDS"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_VALIDATE] Footer Compliance Check
+# ═══════════════════════════════════════════════════════════════════════════
+FOOTER_PRESENT="false"
+if [ -n "$LAST_ASSISTANT" ]; then
+  FOOTER_PRESENT=$(check_footer_present "$LAST_ASSISTANT")
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_COMPLIANCE] Build compliance metadata and determine status
+# ═══════════════════════════════════════════════════════════════════════════
+IS_COMPLIANT=$(is_turn_compliant "$RETRIEVAL_OK" "$PATTERN_GUARD_COVERAGE" "$FOOTER_PRESENT" "$PATTERN_COUNT")
+VIOLATION_REASON=$(get_violation_reason "$RETRIEVAL_OK" "$PATTERN_GUARD_COVERAGE" "$FOOTER_PRESENT" "$PATTERN_COUNT")
+
+COMPLIANCE_METADATA=$(build_compliance_metadata \
+  "$RETRIEVAL_OK" \
+  "$PATTERN_GUARD_COVERAGE" \
+  "$FOOTER_PRESENT" \
+  "${EKKOS_STRICT:-0}" \
+  "$PATTERN_COUNT")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ANSI Color Codes for Terminal Styling
@@ -189,19 +233,57 @@ RESET='\033[0m'
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_COMPLIANCE_REPORT] Show compliance status
+# ═══════════════════════════════════════════════════════════════════════════
+echo -e "${CYAN}${BOLD}[[[[ｅｋｋＯＳ＿Ｃｏｍｐｌｉａｎｃｅ]]]]${RESET}"
+echo ""
+
+# PatternGuard status
+if [ "$PATTERN_COUNT" -gt 0 ]; then
+  if [ "$PATTERN_GUARD_COVERAGE" -eq 100 ]; then
+    echo -e "  ${GREEN}✓${RESET} PatternGuard: ${GREEN}100%${RESET} coverage (all $PATTERN_COUNT patterns acknowledged)"
+  else
+    echo -e "  ${RED}✗${RESET} PatternGuard: ${RED}${PATTERN_GUARD_COVERAGE}%${RESET} coverage (${PATTERN_COUNT} patterns, some unacknowledged)"
+  fi
+else
+  echo -e "  ${DIM}○${RESET} PatternGuard: ${DIM}N/A${RESET} (no patterns retrieved)"
+fi
+
+# Footer status
+if [ "$FOOTER_PRESENT" = "true" ]; then
+  echo -e "  ${GREEN}✓${RESET} Footer: ${GREEN}present${RESET}"
+else
+  echo -e "  ${RED}✗${RESET} Footer: ${RED}missing${RESET} (must end with 🧠 **ekkOS_™** · 📅)"
+fi
+
+# Retrieval status
+if [ "$RETRIEVAL_OK" = "true" ]; then
+  echo -e "  ${GREEN}✓${RESET} Retrieval: ${GREEN}succeeded${RESET}"
+else
+  echo -e "  ${YELLOW}⚠${RESET} Retrieval: ${YELLOW}not confirmed${RESET}"
+fi
+
+# Overall compliance
+if [ "$IS_COMPLIANT" = "true" ]; then
+  echo ""
+  echo -e "  ${GREEN}${BOLD}✓ GOLDEN LOOP COMPLIANT${RESET}"
+else
+  echo ""
+  echo -e "  ${RED}${BOLD}✗ GOLDEN LOOP VIOLATION: ${VIOLATION_REASON}${RESET}"
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════
 # [ekkOS_LEARN_DETECT] Check for manual forge markers in response
-# If AI output [ekkOS_LEARN] tags, extract and send to forge endpoint
-# This enforces the Golden Loop - AI just outputs marker, hook does the work
 # ═══════════════════════════════════════════════════════════════════════════
 FORGE_COUNT=0
 if [ -n "$LAST_ASSISTANT" ]; then
-  # Look for forge markers: [ekkOS_LEARN] Forging: "Title" or similar
   FORGE_MARKERS=$(echo "$LAST_ASSISTANT" | grep -oE '\[ekkOS_LEARN\][^"]*"[^"]+"' || true)
 
   if [ -n "$FORGE_MARKERS" ]; then
     echo -e "${YELLOW}+${RESET} ${YELLOW}[[[[ｅｋｋＯＳ＿Ｌｅａｒｎ ｄｅｔｅｃｔ]]]]${RESET} ${DIM}found forge markers${RESET}"
 
-    # Extract pattern titles from markers and send to backend for forging
     while IFS= read -r marker; do
       [ -z "$marker" ] && continue
       PATTERN_TITLE=$(echo "$marker" | grep -oE '"[^"]+"' | head -1 | tr -d '"')
@@ -236,14 +318,42 @@ if [ -n "$LAST_ASSISTANT" ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
+# [ekkOS_AUTO_FORGE_VIOLATION] Auto-forge anti-pattern for violations
+# ═══════════════════════════════════════════════════════════════════════════
+if [ "$IS_COMPLIANT" != "true" ] && [ -n "$LAST_USER" ]; then
+  echo -e "${YELLOW}+${RESET} ${YELLOW}[[[[ｅｋｋＯＳ＿Ａｎｔｉ-Ｐａｔｔｅｒｎ]]]]${RESET} ${DIM}recording violation${RESET}"
+
+  # Forge anti-pattern in background
+  (
+    ANTIPATTERN_TITLE="Golden Loop Violation: $VIOLATION_REASON"
+    ANTIPATTERN_PROBLEM="Response did not comply with Golden Loop requirements. Violations: $VIOLATION_REASON. PatternGuard coverage: ${PATTERN_GUARD_COVERAGE}%. Footer present: $FOOTER_PRESENT."
+    ANTIPATTERN_SOLUTION="Ensure: 1) All retrieved pattern IDs are acknowledged with [ekkOS_SELECT] or [ekkOS_SKIP], 2) Response ends with footer: 🧠 **ekkOS_™** · 📅 YYYY-MM-DD, 3) Retrieval succeeds before answering."
+
+    curl -s -X POST "$MEMORY_API_URL/api/v1/patterns" \
+      -H "Authorization: Bearer $AUTH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"title\": $(echo "$ANTIPATTERN_TITLE" | jq -R .),
+        \"problem\": $(echo "$ANTIPATTERN_PROBLEM" | jq -R -s .),
+        \"solution\": $(echo "$ANTIPATTERN_SOLUTION" | jq -R -s .),
+        \"tags\": [\"anti-pattern\", \"golden-loop-violation\", \"claude-code\", \"compliance\"],
+        \"source\": \"claude-code-hook-enforcement\",
+        \"confidence\": 0.7,
+        \"anti_patterns\": [\"Skipping PatternGuard acknowledgment\", \"Omitting footer\", \"Answering without retrieval\"]
+      }" \
+      --connect-timeout 5 \
+      --max-time 10 >/dev/null 2>&1 || true
+  ) &
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
 # [ekkOS_CAPTURE] Send data to backend - backend does ALL the work
 # ═══════════════════════════════════════════════════════════════════════════
 CAPTURED="false"
 if [ -n "$LAST_USER" ] && [ -n "$LAST_ASSISTANT" ]; then
   echo -e "${CYAN}+${RESET} ${CYAN}[[[[ｅｋｋＯＳ＿Ｃａｐｔｕｒｅ]]]]${RESET} ${DIM}sending to memory substrate${RESET}"
 
-  # Build payload with ALL the data - backend handles intelligence
-  # CRITICAL: Include user_id so pattern_applications can be tracked per user
+  # Build payload with ALL the data including compliance metadata
   JSON_PAYLOAD=$(cat << EOF
 {
   "user_query": $(echo "$LAST_USER" | jq -R -s .),
@@ -260,7 +370,15 @@ if [ -n "$LAST_USER" ] && [ -n "$LAST_ASSISTANT" ]; then
     "task_id": "$TASK_ID",
     "captured_at": "$TIMESTAMP",
     "auto_apply_detection": true,
-    "user_id": "${USER_ID:-system}"
+    "user_id": "${USER_ID:-system}",
+    "compliance": {
+      "retrieval_ok": $RETRIEVAL_OK,
+      "pattern_guard_coverage_pct": $PATTERN_GUARD_COVERAGE,
+      "footer_present": $FOOTER_PRESENT,
+      "is_compliant": $IS_COMPLIANT,
+      "violation_reason": "$VIOLATION_REASON",
+      "ekkos_strict": ${EKKOS_STRICT:-0}
+    }
   }
 }
 EOF
@@ -289,16 +407,20 @@ fi
 # Cleanup state file
 rm -f "$PATTERNS_FILE" 2>/dev/null
 
+# Cleanup turn contract ONLY after successful capture
+if [ "$CAPTURED" = "true" ]; then
+  cleanup_turn_contract "$SESSION_ID" "claude-code" "$PROJECT_ROOT"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════
 # [ekkOS_REFLEX] Send turn_end event to trigger 3-Judge evaluation
-# PORTABLE: Uses cloud API by default (mcp.ekkos.dev), no local process needed
 # ═══════════════════════════════════════════════════════════════════════════
 REFLEX_API_URL="${REFLEX_API_URL:-https://mcp.ekkos.dev/api/v1/reflex/log}"
 
 if [ "$CAPTURED" = "true" ] && [ -n "$LAST_USER" ] && [ -n "$LAST_ASSISTANT" ]; then
   echo -e "${YELLOW}+${RESET} ${YELLOW}[[[[ｅｋｋＯＳ＿３-Ｊｕｄｇｅs]]]]${RESET} ${DIM}triggering consensus evaluation${RESET}"
 
-  # Build reflex event payload
+  # Build reflex event payload with compliance data
   REFLEX_PAYLOAD=$(cat << EOF
 {
   "action": "turn_end",
@@ -311,12 +433,19 @@ if [ "$CAPTURED" = "true" ] && [ -n "$LAST_USER" ] && [ -n "$LAST_ASSISTANT" ]; 
     "patterns_retrieved": $PATTERN_COUNT,
     "patterns_applied": $(echo "$APPLIED_PATTERN_IDS" | tr ',' '\n' | grep -c . || echo "0"),
     "session_id": "claude-code-${SESSION_ID}",
-    "timestamp": "$TIMESTAMP"
+    "timestamp": "$TIMESTAMP",
+    "compliance": {
+      "retrieval_ok": $RETRIEVAL_OK,
+      "pattern_guard_coverage_pct": $PATTERN_GUARD_COVERAGE,
+      "footer_present": $FOOTER_PRESENT,
+      "is_compliant": $IS_COMPLIANT,
+      "violation_reason": "$VIOLATION_REASON"
+    }
   },
   "learn": {
     "lookups": $PATTERN_COUNT,
     "reuse": $(echo "$APPLIED_PATTERN_IDS" | tr ',' '\n' | grep -c . || echo "0"),
-    "saves": 0,
+    "saves": $FORGE_COUNT,
     "abstain": 0
   },
   "context": {
@@ -364,6 +493,14 @@ if [ "$FORGE_COUNT" -gt 0 ]; then
   echo -e "  ${GREEN}+${RESET} forged: ${FORGE_COUNT} new patterns (from [ekkOS_LEARN] markers)"
 fi
 echo -e "  ${GREEN}+${RESET} analyze: async backend processing"
+
+# Compliance summary
+if [ "$IS_COMPLIANT" = "true" ]; then
+  echo -e "  ${GREEN}+${RESET} compliance: ${GREEN}PASS${RESET}"
+else
+  echo -e "  ${RED}-${RESET} compliance: ${RED}FAIL${RESET} (${VIOLATION_REASON})"
+fi
+
 echo ""
 
 exit 0

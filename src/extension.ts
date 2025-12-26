@@ -14,16 +14,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 // Types
-// Config stored in ~/.ekkos/config.json
-// NOTE: apiKey is included for CLI hook access (Claude Code, Cursor hooks)
-// The user's ekk_* API key is user-scoped and already exposed in MCP configs
+// Public config stored in ~/.ekkos/config.json (non-sensitive)
 interface EkkosPublicConfig {
   userId: string;
   email: string;
   tier: 'free' | 'pro' | 'team' | 'enterprise';
   createdAt: string;
   patternScope?: 'both' | 'personal' | 'collective';
-  apiKey?: string;  // For CLI hooks that can't access VS Code SecretStorage
 }
 
 // Full config including secrets (runtime only, secrets from SecretStorage)
@@ -216,9 +213,8 @@ export async function activate(context: vscode.ExtensionContext) {
   // Store context for SecretStorage access
   extensionContext = context;
 
-  // Migrate secrets and sync apiKey for CLI hooks
+  // Security: migrate any secrets from disk to SecretStorage (one-time cleanup)
   await migrateSecretsFromDisk();
-  await syncApiKeyToConfigFile();
 
   // Load existing config (async - secrets from SecretStorage)
   currentConfig = await loadConfigAsync();
@@ -765,54 +761,8 @@ function loadConfig(): EkkosConfig | null {
   return currentConfig;
 }
 
-// Sync apiKey from SecretStorage to config.json for CLI hooks (Claude Code, Cursor)
-// This ensures CLI hooks can authenticate even if user authenticated before this feature
-async function syncApiKeyToConfigFile(): Promise<void> {
-  if (!extensionContext) {
-    return;
-  }
-
-  try {
-    if (!fs.existsSync(CONFIG_PATH)) {
-      return;
-    }
-
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-    const diskConfig = JSON.parse(raw);
-
-    // Already has apiKey - no sync needed
-    if (diskConfig.apiKey) {
-      return;
-    }
-
-    // Get apiKey from SecretStorage
-    const apiKey = await extensionContext.secrets.get(SECRET_KEY_API_KEY);
-    if (!apiKey) {
-      return; // No apiKey to sync
-    }
-
-    console.log('[ekkOS Connect] Syncing apiKey to config.json for CLI hooks...');
-
-    // Update config file with apiKey
-    const updatedConfig: EkkosPublicConfig = {
-      ...diskConfig,
-      apiKey
-    };
-
-    // Atomic write
-    const tempPath = CONFIG_PATH + '.tmp';
-    fs.writeFileSync(tempPath, JSON.stringify(updatedConfig, null, 2));
-    fs.renameSync(tempPath, CONFIG_PATH);
-
-    console.log('[ekkOS Connect] apiKey synced to config.json - CLI hooks can now authenticate');
-  } catch (e) {
-    console.error('[ekkOS Connect] apiKey sync failed:', e);
-  }
-}
-
-// Migration: ensure secrets are in SecretStorage and apiKey is in config for CLI hooks
-// NOTE: apiKey (ekk_*) is kept on disk for CLI hooks (Claude Code, Cursor)
-// Only OAuth token is sensitive and should only be in SecretStorage
+// Security migration: scrub secrets from disk config file
+// Old versions may have stored apiKey/token in config.json - migrate them to SecretStorage
 async function migrateSecretsFromDisk(): Promise<void> {
   if (!extensionContext) {
     return;
@@ -826,15 +776,13 @@ async function migrateSecretsFromDisk(): Promise<void> {
     const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
     const diskConfig = JSON.parse(raw);
 
-    // Check if token exists on disk (needs migration) or apiKey is missing (needs sync)
-    const hasTokenOnDisk = !!diskConfig.token;
-    const needsApiKeySync = !diskConfig.apiKey;
-
-    if (!hasTokenOnDisk && !needsApiKeySync) {
-      return; // Already in correct state
+    // Check if secrets exist on disk (old format)
+    const hasSecretsOnDisk = diskConfig.apiKey || diskConfig.token;
+    if (!hasSecretsOnDisk) {
+      return; // Already clean
     }
 
-    console.log('[ekkOS Connect] Syncing credentials...');
+    console.log('[ekkOS Connect] Migrating secrets from disk to SecretStorage...');
 
     // Migrate secrets to SecretStorage if not already present
     const existingApiKey = await extensionContext.secrets.get(SECRET_KEY_API_KEY);
@@ -842,7 +790,7 @@ async function migrateSecretsFromDisk(): Promise<void> {
 
     if (diskConfig.apiKey && !existingApiKey) {
       await extensionContext.secrets.store(SECRET_KEY_API_KEY, diskConfig.apiKey);
-      console.log('[ekkOS Connect] API key synced to SecretStorage');
+      console.log('[ekkOS Connect] API key migrated to SecretStorage');
     }
 
     if (diskConfig.token && !existingToken) {
@@ -850,17 +798,13 @@ async function migrateSecretsFromDisk(): Promise<void> {
       console.log('[ekkOS Connect] Token migrated to SecretStorage');
     }
 
-    // Get apiKey for config file (from disk or SecretStorage)
-    const apiKeyForConfig = diskConfig.apiKey || existingApiKey;
-
-    // Rewrite config file with apiKey (for CLI hooks) but without token
+    // Rewrite config file WITHOUT secrets
     const cleanConfig: EkkosPublicConfig = {
       userId: diskConfig.userId,
       email: diskConfig.email,
       tier: diskConfig.tier || 'free',
       createdAt: diskConfig.createdAt || new Date().toISOString(),
-      patternScope: diskConfig.patternScope,
-      apiKey: apiKeyForConfig  // Keep apiKey for CLI hooks
+      patternScope: diskConfig.patternScope
     };
 
     // Atomic write
@@ -868,8 +812,10 @@ async function migrateSecretsFromDisk(): Promise<void> {
     fs.writeFileSync(tempPath, JSON.stringify(cleanConfig, null, 2));
     fs.renameSync(tempPath, CONFIG_PATH);
 
-    console.log('[ekkOS Connect] Config synced - apiKey available for CLI hooks');
-    // Don't show notification for routine sync
+    console.log('[ekkOS Connect] Config file scrubbed - secrets removed from disk');
+    vscode.window.showInformationMessage(
+      'ekkOS: Credentials migrated to secure storage for improved security.'
+    );
 
   } catch (e) {
     console.error('[ekkOS Connect] Secret migration failed:', e);
@@ -893,22 +839,31 @@ async function saveConfigAsync(config: EkkosConfig): Promise<void> {
   await extensionContext.secrets.store(SECRET_KEY_TOKEN, config.token);
   await extensionContext.secrets.store(SECRET_KEY_API_KEY, config.apiKey);
 
-  // Store config in JSON file (includes apiKey for CLI hooks)
-  // NOTE: apiKey (ekk_*) is user-scoped and already written to MCP configs
-  // CLI hooks (Claude Code, Cursor) need this to authenticate without VS Code
-  const publicConfig: EkkosPublicConfig = {
+  // Store config in JSON file
+  // NOTE: apiKey is included because Claude Code hooks read from this file
+  // The hooks run outside VS Code and can't access SecretStorage
+  // File permissions in ~/.ekkos/ should be restricted (chmod 700)
+  const publicConfig: EkkosPublicConfig & { apiKey?: string } = {
     userId: config.userId,
     email: config.email,
     tier: config.tier,
     createdAt: config.createdAt,
     patternScope: config.patternScope,
-    apiKey: config.apiKey  // For CLI hook authentication
+    apiKey: config.apiKey  // Required for Claude Code hooks
   };
 
   // Atomic write: write to temp file first, then rename
   const tempPath = CONFIG_PATH + '.tmp';
   try {
     fs.writeFileSync(tempPath, JSON.stringify(publicConfig, null, 2));
+    // Set secure file permissions BEFORE renaming (owner read/write only)
+    if (process.platform !== 'win32') {
+      try {
+        fs.chmodSync(tempPath, 0o600);
+      } catch {
+        // Ignore chmod errors (e.g., on some network mounts)
+      }
+    }
     fs.renameSync(tempPath, CONFIG_PATH); // Atomic on POSIX systems
   } catch (e) {
     // Clean up temp file if rename failed
@@ -1692,8 +1647,8 @@ For more info: https://docs.ekkos.dev
 }
 
 function getCursorRulesTemplate(): string {
-  // Load from modular templates directory (30-ekkos-core.mdc is the main rules file)
-  const templatePath = path.join(__dirname, '..', 'templates', 'rules', '30-ekkos-core.mdc');
+  // Load from templates directory if available
+  const templatePath = path.join(__dirname, '..', 'templates', 'cursor-rules', 'ekkos-memory.md');
   if (fs.existsSync(templatePath)) {
     return fs.readFileSync(templatePath, 'utf8');
   }
@@ -1880,16 +1835,14 @@ async function fullSetupForIde(ideName: string, config: EkkosConfig): Promise<{ 
       fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksConfig, null, 2));
       results.push('Hooks ✓');
 
-      // 3. Rules (~/.cursor/rules/) - Modular .mdc files
+      // 3. Rules (~/.cursor/rules/)
       const rulesDir = path.join(cursorDir, 'rules');
       fs.mkdirSync(rulesDir, { recursive: true });
-      const ruleTemplates = ['00-hooks-contract.mdc', '30-ekkos-core.mdc', '31-ekkos-messages.mdc'];
-      for (const template of ruleTemplates) {
-        const source = path.join(__dirname, '..', 'templates', 'rules', template);
-        const dest = path.join(rulesDir, template);
-        if (fs.existsSync(source)) {
-          fs.copyFileSync(source, dest);
-        }
+      const rulesSrc = path.join(__dirname, '..', 'templates', 'cursor-rules', 'ekkos-memory.md');
+      if (fs.existsSync(rulesSrc)) {
+        fs.copyFileSync(rulesSrc, path.join(rulesDir, 'ekkos-memory.mdc'));
+      } else {
+        fs.writeFileSync(path.join(rulesDir, 'ekkos-memory.mdc'), getCursorRulesTemplate());
       }
       results.push('Rules ✓');
 
@@ -4721,14 +4674,21 @@ async function setupRules(context: vscode.ExtensionContext, workspaceRoot: strin
         fs.mkdirSync(cursorHooksDir, { recursive: true });
       }
 
-      // Cursor rules - modular .mdc files for better organization and debugging
-      const ruleTemplates = ['00-hooks-contract.mdc', '30-ekkos-core.mdc', '31-ekkos-messages.mdc'];
-      for (const template of ruleTemplates) {
+      // Cursor rules (new .md format)
+      const cursorRuleSource = path.join(extensionPath, 'templates', 'cursor-rules', 'ekkos-memory.md');
+      const cursorRuleDest = path.join(cursorRulesDir, 'ekkos-memory.md');
+      if (fs.existsSync(cursorRuleSource)) {
+        fs.copyFileSync(cursorRuleSource, cursorRuleDest);
+        console.log(`✓ Created Cursor rule: ekkos-memory.md`);
+      }
+
+      // Legacy .mdc rules for backwards compatibility
+      const legacyRuleTemplates = ['00-hooks-contract.mdc', '30-ekkos-core.mdc', '31-ekkos-messages.mdc'];
+      for (const template of legacyRuleTemplates) {
         const source = path.join(extensionPath, 'templates', 'rules', template);
         const dest = path.join(cursorRulesDir, template);
         if (fs.existsSync(source)) {
           fs.copyFileSync(source, dest);
-          console.log(`✓ Created Cursor rule: ${template}`);
         }
       }
 

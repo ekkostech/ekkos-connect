@@ -106,7 +106,7 @@ let currentSetupStatus: SetupStatus | null = null;
  */
 function detectCurrentIDE(): 'windsurf' | 'cursor' | 'vscode' | 'claude-code' | 'unknown' {
   const appName = vscode.env.appName?.toLowerCase() || '';
-  
+
   if (appName.includes('windsurf') || appName.includes('codeium')) {
     return 'windsurf';
   }
@@ -119,7 +119,7 @@ function detectCurrentIDE(): 'windsurf' | 'cursor' | 'vscode' | 'claude-code' | 
   if (appName.includes('visual studio code') || appName.includes('vscode')) {
     return 'vscode';
   }
-  
+
   return 'unknown';
 }
 
@@ -261,7 +261,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ekkos.refreshStatus', () => refreshStatus()),
     vscode.commands.registerCommand('ekkos.setupRules', () => setupRulesCommand(context)),
     vscode.commands.registerCommand('ekkos.setupGlobal', () => setupGlobalHooksCommand(context)),
-    vscode.commands.registerCommand('ekkos.togglePatternScope', () => togglePatternScope())
+    vscode.commands.registerCommand('ekkos.togglePatternScope', () => togglePatternScope()),
+    vscode.commands.registerCommand('ekkos.createDirective', () => createDirectiveCommand())
   );
 
   // Register chat participant for automatic pattern injection
@@ -298,12 +299,12 @@ export async function activate(context: vscode.ExtensionContext) {
   if (!context.globalState.get('ekkos.welcomed') && !currentConfig) {
     context.globalState.update('ekkos.welcomed', true);
     const currentIDE = detectCurrentIDE();
-    const ideName = currentIDE === 'windsurf' ? 'Windsurf' 
+    const ideName = currentIDE === 'windsurf' ? 'Windsurf'
       : currentIDE === 'cursor' ? 'Cursor'
-      : currentIDE === 'claude-code' ? 'Claude Code'
-      : currentIDE === 'vscode' ? 'VS Code'
-      : 'your IDE';
-    
+        : currentIDE === 'claude-code' ? 'Claude Code'
+          : currentIDE === 'vscode' ? 'VS Code'
+            : 'your IDE';
+
     vscode.window.showInformationMessage(
       `Welcome to ekkOS! We'll automatically configure ${ideName} for you. Click the ekkOS icon to get started.`,
       'Get Started'
@@ -627,8 +628,8 @@ function checkFileContainsEkkos(filePath: string): boolean {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
     return content.toLowerCase().includes('ekkos') ||
-           content.includes('mcp.ekkos.dev') ||
-           content.includes('[ekkOS_');
+      content.includes('mcp.ekkos.dev') ||
+      content.includes('[ekkOS_');
   } catch {
     return false;
   }
@@ -1005,12 +1006,12 @@ async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionCont
 
   // Auto-deploy to current IDE immediately (no user action needed)
   const currentIDE = detectCurrentIDE();
-  const ideName = currentIDE === 'windsurf' ? 'Windsurf' 
+  const ideName = currentIDE === 'windsurf' ? 'Windsurf'
     : currentIDE === 'cursor' ? 'Cursor'
-    : currentIDE === 'claude-code' ? 'Claude Code'
-    : currentIDE === 'vscode' ? 'VS Code'
-    : 'your IDE';
-  
+      : currentIDE === 'claude-code' ? 'Claude Code'
+        : currentIDE === 'vscode' ? 'VS Code'
+          : 'your IDE';
+
   // Show success message
   vscode.window.showInformationMessage(
     `✓ Connected as ${email}! Configuring ${ideName}...`,
@@ -1076,12 +1077,12 @@ async function handleManualApiKey(apiKey: string, context: vscode.ExtensionConte
 
     // Auto-deploy to current IDE immediately
     const currentIDE = detectCurrentIDE();
-    const ideName = currentIDE === 'windsurf' ? 'Windsurf' 
+    const ideName = currentIDE === 'windsurf' ? 'Windsurf'
       : currentIDE === 'cursor' ? 'Cursor'
-      : currentIDE === 'claude-code' ? 'Claude Code'
-      : currentIDE === 'vscode' ? 'VS Code'
-      : 'your IDE';
-    
+        : currentIDE === 'claude-code' ? 'Claude Code'
+          : currentIDE === 'vscode' ? 'VS Code'
+            : 'your IDE';
+
     vscode.window.showInformationMessage(
       `✓ Connected as ${data.user.email}! Configuring ${ideName}...`,
       'View Status'
@@ -1218,11 +1219,11 @@ function getIdeConfigs(): IDEConfig[] {
 function getCurrentIdeConfig(): IDEConfig | null {
   const currentIDE = detectCurrentIDE();
   const homeDir = os.homedir();
-  
+
   // Map current IDE to its config path
   let configPath: string;
   let ideName: string;
-  
+
   if (currentIDE === 'windsurf') {
     configPath = path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json');
     ideName = 'Windsurf';
@@ -1241,7 +1242,7 @@ function getCurrentIdeConfig(): IDEConfig | null {
     // Unknown IDE
     return null;
   }
-  
+
   return {
     name: ideName,
     configPath,
@@ -1261,7 +1262,7 @@ async function autoDeployToCurrentIde(): Promise<void> {
 
   const currentIDE = detectCurrentIDE();
   const ideConfig = getCurrentIdeConfig();
-  
+
   if (!ideConfig) {
     // Unknown IDE - show generic message
     vscode.window.showInformationMessage('ekkOS memory is ready! Configure your AI agent manually at platform.ekkos.dev');
@@ -1270,12 +1271,12 @@ async function autoDeployToCurrentIde(): Promise<void> {
 
   if (!ideConfig.exists) {
     // IDE directory doesn't exist
-    const message = currentIDE === 'windsurf' 
+    const message = currentIDE === 'windsurf'
       ? 'Windsurf configuration directory not found. Make sure Windsurf is installed.'
       : currentIDE === 'cursor'
-      ? 'Cursor configuration directory not found. Make sure Cursor is installed.'
-      : 'Configuration directory not found.';
-    
+        ? 'Cursor configuration directory not found. Make sure Cursor is installed.'
+        : 'Configuration directory not found.';
+
     vscode.window.showWarningMessage(message);
     return;
   }
@@ -1319,13 +1320,13 @@ async function autoDeployToCurrentIde(): Promise<void> {
   // Deploy to current IDE
   try {
     await deployToIde(ideConfig, currentConfig);
-    
+
     // Update connection status
-    ideConnectionStatus.set(ideConfig.name, { 
-      status: 'checking', 
-      lastChecked: new Date() 
+    ideConnectionStatus.set(ideConfig.name, {
+      status: 'checking',
+      lastChecked: new Date()
     });
-    
+
     // Show IDE-specific success message with auto-reload option for credential changes
     if (credentialsChanged && (currentIDE === 'cursor' || currentIDE === 'vscode')) {
       // Offer automatic window reload for VS Code-based IDEs
@@ -1341,10 +1342,10 @@ async function autoDeployToCurrentIde(): Promise<void> {
       const restartMessage = currentIDE === 'windsurf'
         ? 'Restart Windsurf to activate ekkOS memory.'
         : currentIDE === 'cursor'
-        ? 'Reload Cursor window (Cmd+Shift+P → "Reload Window") to activate ekkOS memory.'
-        : credentialsChanged
-        ? 'Restart your IDE to use the new credentials.'
-        : 'Restart your IDE to activate ekkOS memory.';
+          ? 'Reload Cursor window (Cmd+Shift+P → "Reload Window") to activate ekkOS memory.'
+          : credentialsChanged
+            ? 'Restart your IDE to use the new credentials.'
+            : 'Restart your IDE to activate ekkOS memory.';
 
       vscode.window.showInformationMessage(
         `✓ ${ideConfig.name} configured! ${restartMessage}`,
@@ -1357,10 +1358,10 @@ async function autoDeployToCurrentIde(): Promise<void> {
     }
   } catch (e: any) {
     vscode.window.showErrorMessage(`Failed to configure ${ideConfig.name}: ${e.message}`);
-    ideConnectionStatus.set(ideConfig.name, { 
-      status: 'error', 
+    ideConnectionStatus.set(ideConfig.name, {
+      status: 'error',
       lastChecked: new Date(),
-      error: e.message 
+      error: e.message
     });
   }
 
@@ -1702,7 +1703,7 @@ async function getIdeSetupStatus(ideName: string): Promise<IdeSetupStatus> {
       try {
         const content = fs.readFileSync(mcpPath, 'utf8');
         status.mcp = content.includes('ekkos-memory') || content.includes('ekkos');
-      } catch {}
+      } catch { }
     }
     // Hooks
     const hooksPath = path.join(homeDir, '.claude', 'hooks', 'user-prompt-submit.sh');
@@ -1718,7 +1719,7 @@ async function getIdeSetupStatus(ideName: string): Promise<IdeSetupStatus> {
       try {
         const content = fs.readFileSync(mcpPath, 'utf8');
         status.mcp = content.includes('ekkos-memory') || content.includes('ekkos');
-      } catch {}
+      } catch { }
     }
     // Hooks (Cursor uses .cursor/hooks/)
     const hooksDir = path.join(homeDir, '.cursor', 'hooks');
@@ -1735,7 +1736,7 @@ async function getIdeSetupStatus(ideName: string): Promise<IdeSetupStatus> {
       try {
         const content = fs.readFileSync(mcpPath, 'utf8');
         status.mcp = content.includes('ekkos-memory') || content.includes('ekkos');
-      } catch {}
+      } catch { }
     }
     // Windsurf Cascade Hooks (~/.codeium/windsurf/hooks/)
     const hooksDir = path.join(homeDir, '.codeium', 'windsurf', 'hooks');
@@ -1818,7 +1819,7 @@ async function fullSetupForIde(ideName: string, config: EkkosConfig): Promise<{ 
       if (fs.existsSync(hooksJsonPath)) {
         try {
           hooksConfig = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
-        } catch {}
+        } catch { }
       }
       // Add beforeSubmitPrompt hook
       if (!hooksConfig.hooks) hooksConfig.hooks = {};
@@ -1873,7 +1874,7 @@ async function fullSetupForIde(ideName: string, config: EkkosConfig): Promise<{ 
       if (fs.existsSync(hooksJsonPath)) {
         try {
           hooksConfig = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
-        } catch {}
+        } catch { }
       }
       // Add beforeSubmitPrompt hook
       if (!hooksConfig.hooks) hooksConfig.hooks = {};
@@ -1916,7 +1917,7 @@ async function fullSetupForIde(ideName: string, config: EkkosConfig): Promise<{ 
         try {
           mcpConfig = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8'));
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-        } catch {}
+        } catch { }
       }
 
       // Add ekkos-memory server
@@ -2010,7 +2011,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly _context: vscode.ExtensionContext
-  ) {}
+  ) { }
 
   public refresh() {
     if (this._view) {
@@ -2370,7 +2371,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         <div class="gradient-orb orb-1"></div>
         <div class="gradient-orb orb-2"></div>
         <div class="particles">
-          ${Array.from({length: 20}, (_, i) => `<div class="particle particle-${i % 5}"></div>`).join('')}
+          ${Array.from({ length: 20 }, (_, i) => `<div class="particle particle-${i % 5}"></div>`).join('')}
         </div>
       </div>
 
@@ -2447,11 +2448,10 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         <div class="collective-stats">
           <div class="collective-main">
             <span class="collective-total">${(activity?.collective?.displayTotal ?? activity?.collective?.total ?? 0).toLocaleString()}</span>
-            <span class="collective-label">${
-              config.patternScope === 'personal' ? 'your personal patterns' :
-              config.patternScope === 'collective' ? 'collective patterns (all users)' :
-              'total patterns available'
-            }</span>
+            <span class="collective-label">${config.patternScope === 'personal' ? 'your personal patterns' :
+        config.patternScope === 'collective' ? 'collective patterns (all users)' :
+          'total patterns available'
+      }</span>
           </div>
           <div class="collective-details">
             <div class="collective-item">
@@ -2535,8 +2535,8 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           <div class="upgrade-content">
             <div class="upgrade-title">${limitExceeded ? 'Echo Tier Limit Reached' : 'Approaching Echo Tier Limit'}</div>
             <div class="upgrade-message">${limitExceeded
-              ? 'Upgrade to Resonance for unlimited memory and pattern forging.'
-              : Math.max(Math.round(ekkosPercent), Math.round(crystallizePercent)) + '% of Echo tier used. Upgrade to Resonance for more.'}</div>
+          ? 'Upgrade to Resonance for unlimited memory and pattern forging.'
+          : Math.max(Math.round(ekkosPercent), Math.round(crystallizePercent)) + '% of Echo tier used. Upgrade to Resonance for more.'}</div>
           </div>
           <a href="https://platform.ekkos.dev/pricing" class="upgrade-btn">
             <span>Upgrade</span>
@@ -2602,26 +2602,26 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
       <!-- CURRENT IDE - Prominent display -->
       <div class="section current-ide-section">
         ${(() => {
-          const currentIDE = detectCurrentIDE();
-          const ideNameMap: Record<string, string> = {
-            'windsurf': 'Windsurf',
-            'cursor': 'Cursor',
-            'claude-code': 'Claude Code',
-            'vscode': 'VS Code'
-          };
-          const ideIconMap: Record<string, string> = {
-            'Windsurf': '🏄',
-            'Cursor': '🖱️',
-            'Claude Code': '🤖',
-            'VS Code': '💻'
-          };
-          const currentIdeName = ideNameMap[currentIDE] || 'Unknown IDE';
-          const currentIcon = ideIconMap[currentIdeName] || '💻';
-          const currentIdeConfig = ideConfigs.find(ide => ide.name === currentIdeName || (currentIdeName === 'VS Code' && ide.name === 'Cursor'));
-          const currentStatus = currentIdeConfig ? getIdeConnectionStatus(currentIdeConfig.name) : { status: 'unknown' };
-          const isConfigured = currentStatus.status === 'configured';
+        const currentIDE = detectCurrentIDE();
+        const ideNameMap: Record<string, string> = {
+          'windsurf': 'Windsurf',
+          'cursor': 'Cursor',
+          'claude-code': 'Claude Code',
+          'vscode': 'VS Code'
+        };
+        const ideIconMap: Record<string, string> = {
+          'Windsurf': '🏄',
+          'Cursor': '🖱️',
+          'Claude Code': '🤖',
+          'VS Code': '💻'
+        };
+        const currentIdeName = ideNameMap[currentIDE] || 'Unknown IDE';
+        const currentIcon = ideIconMap[currentIdeName] || '💻';
+        const currentIdeConfig = ideConfigs.find(ide => ide.name === currentIdeName || (currentIdeName === 'VS Code' && ide.name === 'Cursor'));
+        const currentStatus = currentIdeConfig ? getIdeConnectionStatus(currentIdeConfig.name) : { status: 'unknown' };
+        const isConfigured = currentStatus.status === 'configured';
 
-          return `
+        return `
             <div class="current-ide-header">
               <h3>🎯 You're Using</h3>
             </div>
@@ -2643,7 +2643,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
               <span class="setup-badge">Rules</span>
             </div>
           `;
-        })()}
+      })()}
       </div>
 
       <!-- OTHER IDEs - Expandable list -->
@@ -2654,47 +2654,47 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         </div>
         <div class="other-ides-list" id="other-ides-list" style="display: none;">
           ${(() => {
-            const currentIDE = detectCurrentIDE();
-            const ideNameMap: Record<string, string> = {
-              'windsurf': 'Windsurf',
-              'cursor': 'Cursor',
-              'claude-code': 'Claude Code',
-              'vscode': 'VS Code'
-            };
-            const ideIconMap: Record<string, string> = {
-              'Windsurf': '🏄',
-              'Cursor': '🖱️',
-              'Claude Code': '🤖',
-              'VS Code': '💻'
-            };
-            const currentIdeName = ideNameMap[currentIDE];
+        const currentIDE = detectCurrentIDE();
+        const ideNameMap: Record<string, string> = {
+          'windsurf': 'Windsurf',
+          'cursor': 'Cursor',
+          'claude-code': 'Claude Code',
+          'vscode': 'VS Code'
+        };
+        const ideIconMap: Record<string, string> = {
+          'Windsurf': '🏄',
+          'Cursor': '🖱️',
+          'Claude Code': '🤖',
+          'VS Code': '💻'
+        };
+        const currentIdeName = ideNameMap[currentIDE];
 
-            // Filter out current IDE and show others
-            return ideConfigs.filter(ide => ide.name !== currentIdeName && !(currentIdeName === 'VS Code' && ide.name === 'Cursor')).map(ide => {
-              const connStatus = getIdeConnectionStatus(ide.name);
-              const icon = ideIconMap[ide.name] || '💻';
-              let statusClass = 'not-installed';
-              let statusText = 'Not Installed';
-              let showButton = false;
+        // Filter out current IDE and show others
+        return ideConfigs.filter(ide => ide.name !== currentIdeName && !(currentIdeName === 'VS Code' && ide.name === 'Cursor')).map(ide => {
+          const connStatus = getIdeConnectionStatus(ide.name);
+          const icon = ideIconMap[ide.name] || '💻';
+          let statusClass = 'not-installed';
+          let statusText = 'Not Installed';
+          let showButton = false;
 
-              if (!ide.exists) {
-                statusClass = 'not-installed';
-                statusText = 'Not Installed';
-              } else if (connStatus.status === 'configured') {
-                statusClass = 'configured';
-                statusText = '✓ Ready';
-                showButton = true;
-              } else if (connStatus.status === 'not-configured') {
-                statusClass = 'not-configured';
-                statusText = 'Not Setup';
-                showButton = true;
-              } else {
-                statusClass = 'unknown';
-                statusText = 'Unknown';
-                showButton = ide.exists;
-              }
+          if (!ide.exists) {
+            statusClass = 'not-installed';
+            statusText = 'Not Installed';
+          } else if (connStatus.status === 'configured') {
+            statusClass = 'configured';
+            statusText = '✓ Ready';
+            showButton = true;
+          } else if (connStatus.status === 'not-configured') {
+            statusClass = 'not-configured';
+            statusText = 'Not Setup';
+            showButton = true;
+          } else {
+            statusClass = 'unknown';
+            statusText = 'Unknown';
+            showButton = ide.exists;
+          }
 
-              return `
+          return `
                 <div class="other-ide-row">
                   <span class="other-ide-icon">${icon}</span>
                   <span class="other-ide-name">${ide.name}</span>
@@ -2702,8 +2702,8 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
                   ${showButton ? `<button class="btn-mini" data-cmd="fullSetupIde" data-idename="${ide.name}">${connStatus.status === 'configured' ? '⚙️' : '🚀'}</button>` : ''}
                 </div>
               `;
-            }).join('');
-          })()}
+        }).join('');
+      })()}
           <div class="other-ides-hint">
             One-click: MCP + Hooks + Rules
           </div>
@@ -2722,26 +2722,26 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
             <span class="diag-value">${setupStatus?.apiConnection?.latency ? setupStatus.apiConnection.latency + 'ms' : (setupStatus?.apiConnection?.status || 'N/A')}</span>
           </div>
           ${(() => {
-            const currentIDE = detectCurrentIDE();
-            const diagnostics: string[] = [];
-            
-            // Windsurf only needs MCP config (no hooks)
-            if (currentIDE === 'windsurf') {
-              const windsurfConfig = ideConfigs.find(ide => ide.name === 'Windsurf');
-              const windsurfStatus = windsurfConfig ? getIdeConnectionStatus('Windsurf') : { status: 'unknown' };
-              diagnostics.push(`
+        const currentIDE = detectCurrentIDE();
+        const diagnostics: string[] = [];
+
+        // Windsurf only needs MCP config (no hooks)
+        if (currentIDE === 'windsurf') {
+          const windsurfConfig = ideConfigs.find(ide => ide.name === 'Windsurf');
+          const windsurfStatus = windsurfConfig ? getIdeConnectionStatus('Windsurf') : { status: 'unknown' };
+          diagnostics.push(`
                 <div class="diagnostic-item ${windsurfStatus.status === 'configured' ? 'ok' : windsurfStatus.status === 'not-configured' ? 'warn' : 'info'}">
                   <span class="diag-icon">${windsurfStatus.status === 'configured' ? '✅' : '○'}</span>
                   <span class="diag-label">Windsurf MCP Config</span>
                   <span class="diag-value">${windsurfStatus.status === 'configured' ? 'Active' : windsurfStatus.status === 'not-configured' ? 'Not Set' : 'Checking...'}</span>
                 </div>
               `);
-              return diagnostics.join('');
-            }
-            
-            // Claude Code needs hooks - global only
-            if (currentIDE === 'claude-code') {
-              diagnostics.push(`
+          return diagnostics.join('');
+        }
+
+        // Claude Code needs hooks - global only
+        if (currentIDE === 'claude-code') {
+          diagnostics.push(`
                 <div class="diagnostic-item ${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? 'ok' : 'warning'}">
                   <span class="diag-icon">${setupStatus?.globalHooks?.claudeMd?.hasEkkos ? '✅' : '⚠️'}</span>
                   <span class="diag-label">Global CLAUDE.md</span>
@@ -2753,24 +2753,24 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
                   <span class="diag-value">${setupStatus?.globalHooks?.claudeDir?.hasHooks ? 'Active' : 'Not Setup'}</span>
                 </div>
               `);
-              return diagnostics.join('');
-            }
-            
-            // Cursor needs .cursorrules - only show global (recommended)
-            if (currentIDE === 'cursor') {
-              diagnostics.push(`
+          return diagnostics.join('');
+        }
+
+        // Cursor needs .cursorrules - only show global (recommended)
+        if (currentIDE === 'cursor') {
+          diagnostics.push(`
                 <div class="diagnostic-item ${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? 'ok' : 'warning'}">
                   <span class="diag-icon">${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? '✅' : '⚠️'}</span>
                   <span class="diag-label">Global .cursorrules</span>
                   <span class="diag-value">${setupStatus?.globalHooks?.cursorrules?.hasEkkos ? 'Active' : 'Not Setup'}</span>
                 </div>
               `);
-              return diagnostics.join('');
-            }
-            
-            // VS Code or unknown - show minimal
-            return '';
-          })()}
+          return diagnostics.join('');
+        }
+
+        // VS Code or unknown - show minimal
+        return '';
+      })()}
         </div>
       </div>
 
@@ -2873,57 +2873,57 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
 
         <div class="welcome-card">
           ${(() => {
-            const currentIDE = detectCurrentIDE();
-            const ideInfo: Record<string, { name: string; icon: string; steps: string[] }> = {
-              'windsurf': { 
-                name: 'Windsurf', 
-                icon: '🌊', 
-                steps: [
-                  '1. Click "Connect with GitHub" below',
-                  '2. We\'ll configure Windsurf MCP automatically',
-                  '3. Restart Windsurf to activate'
-                ]
-              },
-              'cursor': { 
-                name: 'Cursor', 
-                icon: '🔵', 
-                steps: [
-                  '1. Click "Connect with GitHub" below',
-                  '2. We\'ll configure Cursor MCP automatically',
-                  '3. Reload Cursor window (Cmd+Shift+P → "Reload Window")'
-                ]
-              },
-              'claude-code': { 
-                name: 'Claude Code', 
-                icon: '💜', 
-                steps: [
-                  '1. Click "Connect with GitHub" below',
-                  '2. We\'ll configure Claude Code MCP automatically',
-                  '3. Restart Claude Code to activate'
-                ]
-              },
-              'vscode': { 
-                name: 'VS Code', 
-                icon: '💙', 
-                steps: [
-                  '1. Click "Connect with GitHub" below',
-                  '2. We\'ll configure VS Code MCP automatically',
-                  '3. Restart VS Code to activate'
-                ]
-              },
-              'unknown': { 
-                name: 'Your IDE', 
-                icon: '🖥️', 
-                steps: [
-                  '1. Click "Connect with GitHub" below',
-                  '2. We\'ll configure your IDE automatically',
-                  '3. Restart your IDE to activate'
-                ]
-              }
-            };
-            const info = ideInfo[currentIDE] || ideInfo['unknown'];
-            
-            return `
+      const currentIDE = detectCurrentIDE();
+      const ideInfo: Record<string, { name: string; icon: string; steps: string[] }> = {
+        'windsurf': {
+          name: 'Windsurf',
+          icon: '🌊',
+          steps: [
+            '1. Click "Connect with GitHub" below',
+            '2. We\'ll configure Windsurf MCP automatically',
+            '3. Restart Windsurf to activate'
+          ]
+        },
+        'cursor': {
+          name: 'Cursor',
+          icon: '🔵',
+          steps: [
+            '1. Click "Connect with GitHub" below',
+            '2. We\'ll configure Cursor MCP automatically',
+            '3. Reload Cursor window (Cmd+Shift+P → "Reload Window")'
+          ]
+        },
+        'claude-code': {
+          name: 'Claude Code',
+          icon: '💜',
+          steps: [
+            '1. Click "Connect with GitHub" below',
+            '2. We\'ll configure Claude Code MCP automatically',
+            '3. Restart Claude Code to activate'
+          ]
+        },
+        'vscode': {
+          name: 'VS Code',
+          icon: '💙',
+          steps: [
+            '1. Click "Connect with GitHub" below',
+            '2. We\'ll configure VS Code MCP automatically',
+            '3. Restart VS Code to activate'
+          ]
+        },
+        'unknown': {
+          name: 'Your IDE',
+          icon: '🖥️',
+          steps: [
+            '1. Click "Connect with GitHub" below',
+            '2. We\'ll configure your IDE automatically',
+            '3. Restart your IDE to activate'
+          ]
+        }
+      };
+      const info = ideInfo[currentIDE] || ideInfo['unknown'];
+
+      return `
               <div style="text-align: center; margin-bottom: 24px;">
                 <div style="font-size: 64px; margin-bottom: 16px;">${info.icon}</div>
                 <h2 style="margin-bottom: 8px;">Connect ${info.name}</h2>
@@ -2935,7 +2935,7 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
                 `).join('')}
               </div>
             `;
-          })()}
+    })()}
         </div>
 
         <div class="features-preview" style="margin: 24px 0;">
@@ -4609,7 +4609,7 @@ async function checkAndSetupRules(context: vscode.ExtensionContext) {
 
   const rulesPath = path.join(workspaceFolder.uri.fsPath, '.cursor', 'rules');
   const ekkosRuleExists = fs.existsSync(path.join(rulesPath, '30-ekkos-core.mdc'));
-  
+
   // Check if user previously declined for this workspace
   const disabledMarker = path.join(workspaceFolder.uri.fsPath, '.cursor', '.ekkos-disabled');
   if (fs.existsSync(disabledMarker)) {
@@ -5153,7 +5153,7 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
         if (patternCount > 0) {
           // Build messages array with patterns prepended
           const patternContext = data.formatted_context || '';
-          
+
           // Show patterns to user
           stream.markdown(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
           stream.markdown(`🧠 **ekkOS Memory**\n`);
@@ -5179,7 +5179,7 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
 
           // Call language model with enhanced context
           stream.progress('Generating response with ekkOS patterns...');
-          
+
           const chatResponse = await request.model.sendRequest(messages, {}, token);
 
           // Stream response
@@ -5190,10 +5190,10 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
         } else {
           // No patterns found, just forward to model
           stream.markdown('🔍 No patterns found. Responding without memory context.\n\n');
-          
+
           const messages = [(vscode as any).LanguageModelChatMessage.User(userPrompt)];
           const chatResponse = await request.model.sendRequest(messages, {}, token);
-          
+
           for await (const fragment of chatResponse.text) {
             stream.markdown(fragment);
           }
@@ -5213,6 +5213,50 @@ function registerChatParticipant(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(participant);
   console.log('[ekkOS] Chat participant registered: @ekkos');
+}
+
+async function createDirectiveCommand() {
+  if (!currentConfig?.apiKey) {
+    vscode.window.showErrorMessage('You must be connected to ekkOS to create directives.');
+    return;
+  }
+
+  const type = await vscode.window.showQuickPick(['MUST', 'NEVER', 'PREFER', 'AVOID'], {
+    placeHolder: 'Select directive type'
+  });
+  if (!type) return;
+
+  const rule = await vscode.window.showInputBox({
+    placeHolder: 'Enter the rule (e.g., "Always use TypeScript")',
+    prompt: 'This rule will be enforced by the ekkOS Golden Loop.'
+  });
+  if (!rule) return;
+
+  try {
+    const response = await fetchWithRetry(`${getMcpApiUrl()}/api/v1/memory/directives`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${currentConfig.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        type,
+        rule,
+        priority: 50,
+        scope: 'global',
+        reason: 'Created via VS Code Command'
+      })
+    });
+
+    if (response.ok) {
+      vscode.window.showInformationMessage(`Directive created: [${type}] ${rule}`);
+    } else {
+      const err = await response.text();
+      vscode.window.showErrorMessage(`Failed to create directive: ${err}`);
+    }
+  } catch (e) {
+    vscode.window.showErrorMessage(`Error creating directive: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export function deactivate() {

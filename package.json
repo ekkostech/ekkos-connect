@@ -2,7 +2,7 @@
   "name": "ekkos-connect",
   "displayName": "ekkOS_™ - Universal AI Memory Gateway",
   "description": "Universal AI Memory Gateway - One-click setup for persistent memory across Cursor, Claude Code, VS Code, Windsurf, Codex with real-time diagnostics and automatic pattern injection via Chat Participant",
-  "version": "2.3.16",
+  "version": "2.6.1",
   "publisher": "ekkostech",
   "repository": {
     "type": "git",
@@ -145,12 +145,17 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically set up ekkOS rules when opening new workspaces"
+        },
+        "ekkos.allowDiskApiKey": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Store API key on disk for CLI hooks (Cursor/Claude Code). When enabled, a scoped hook key is stored in `~/.ekkos/config.json` with strict file permissions (chmod 600). Disable for maximum security if you don't use external hooks."
         }
       }
     },
     "uriHandler": {
       "ekkos-connect": {
-        "pattern": "cursor://ekkostech.ekkos-connect/callback"
+        "pattern": "*://ekkostech.ekkos-connect/callback"
       }
     }
   },

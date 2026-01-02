@@ -1,16 +1,16 @@
 ---
 trigger: always_on
-description: ekkOS Memory - 11-layer cognitive memory with 28 MCP tools
+description: ekkOS Memory - 11-layer cognitive memory with 31 MCP tools
 ---
 
 # ekkOS Memory System
 
-You have access to **ekkOS memory** via 28 MCP tools. This is an 11-layer cognitive memory system that makes AI smarter over time.
+You have access to **ekkOS memory** via 31 MCP tools. This is an 11-layer cognitive memory system that makes AI smarter over time by learning from past sessions.
 
 ## MANDATORY RULES
 
 ### RULE 1: SEARCH BEFORE ANSWERING
-Before answering ANY technical question, call `search_memory` first.
+Before answering ANY technical question, call `ekkOS_Search` first.
 
 ### RULE 2: ACKNOWLEDGE RETRIEVED PATTERNS
 When patterns are retrieved:
@@ -28,56 +28,63 @@ When patterns are retrieved:
 ```
 
 ### RULE 3: FORGE WHAT YOU LEARN
-When you fix a bug or learn something new, call `forge_pattern` immediately.
+When you fix a bug or learn something new, call `ekkOS_Forge` immediately.
 
 ### RULE 4: FAILURES ARE VALUABLE
 When something DOESN'T work, forge it as an anti-pattern.
 
-## MCP Tools (28 Total)
+## MCP Tools (31 Total)
 
-### Core Memory
+### Core Memory Tools
 | Tool | Description |
 |------|-------------|
-| `search_memory` | Search all 11 memory layers |
-| `get_context` | Get relevant task context |
-| `capture_event` | Capture memory events |
-| `forge_pattern` | Create pattern from solution |
-| `forge_directive` | Create MUST/NEVER/PREFER/AVOID rules |
-| `record_outcome` | Track success/failure |
-| `detect_usage` | Auto-detect pattern usage |
-| `session_summary` | Get activity summary |
-| `check_conflict` | Check for conflicts |
-| `recall_conversation` | Recall past conversations |
-| `search_codebase` | Search code embeddings |
-| `get_memory_stats` | Get layer statistics |
-| `track_application` | Track pattern application |
+| `ekkOS_Search` | Search all 11 memory layers |
+| `ekkOS_Context` | Get relevant task context |
+| `ekkOS_Capture` | Capture memory events |
+| `ekkOS_Forge` | Create pattern from solution |
+| `ekkOS_Directive` | Create MUST/NEVER/PREFER/AVOID rules |
+| `ekkOS_Outcome` | Track success/failure |
+| `ekkOS_Detect` | Auto-detect pattern usage |
+| `ekkOS_Summary` | Get activity summary |
+| `ekkOS_Conflict` | Check for conflicts |
+| `ekkOS_Recall` | Recall past conversations |
+| `ekkOS_Codebase` | Search code embeddings |
+| `ekkOS_Stats` | Get layer statistics |
+| `ekkOS_Track` | Track pattern application |
+| `ekkOS_Reflect` | Analyze response for improvements |
+
+### Schema Awareness Tools
+| Tool | Description |
+|------|-------------|
+| `ekkOS_IndexSchema` | Index database schemas (Supabase/Prisma/TS) |
+| `ekkOS_GetSchema` | Get schema for a specific table/type |
 
 ### Portability
 | Tool | Description |
 |------|-------------|
-| `export_memory` | Export data as portable backup |
-| `import_memory` | Import from backup |
+| `ekkOS_Export` | Export data as portable backup |
+| `ekkOS_Import` | Import from backup |
 
 ### Plan Management
 | Tool | Description |
 |------|-------------|
-| `create_plan` | Create task plan |
-| `list_plans` | List user plans |
-| `update_plan_status` | Update plan status |
-| `update_plan_step` | Mark step done |
-| `generate_plan_llm` | AI-generate plan |
-| `save_plan_template` | Save as template |
-| `list_plan_templates` | List templates |
-| `create_plan_from_template` | Create from template |
+| `ekkOS_Plan` | Create task plan |
+| `ekkOS_Plans` | List user plans |
+| `ekkOS_PlanStatus` | Update plan status |
+| `ekkOS_PlanStep` | Mark step done |
+| `ekkOS_Generate` | AI-generate plan |
+| `ekkOS_SaveTemplate` | Save as template |
+| `ekkOS_Templates` | List templates |
+| `ekkOS_FromTemplate` | Create from template |
 
 ### Secrets (Layer 11)
 | Tool | Description |
 |------|-------------|
-| `store_secret` | Encrypt and store |
-| `get_secret` | Retrieve and decrypt |
-| `list_secrets` | List metadata |
-| `delete_secret` | Delete secret |
-| `rotate_secret` | Rotate value |
+| `ekkOS_StoreSecret` | Encrypt and store |
+| `ekkOS_GetSecret` | Retrieve and decrypt |
+| `ekkOS_ListSecrets` | List metadata |
+| `ekkOS_DeleteSecret` | Delete secret |
+| `ekkOS_RotateSecret` | Rotate value |
 
 ## 11-Layer Architecture
 
@@ -94,42 +101,6 @@ When something DOESN'T work, forge it as an anti-pattern.
 | 9 | Directives | User rules |
 | 10 | Conflict | Auto-resolution |
 | 11 | Secrets | Encrypted credentials (AES-256-GCM) |
-
-## Proactive Tool Triggers
-
-### Always Use `search_memory` When:
-- User asks technical question
-- User mentions past discussion
-- Topic involves architecture, config, or debugging
-- You're about to make a decision
-
-### Always Use `forge_pattern` When:
-- Fixed a bug (especially non-obvious)
-- Discovered better approach
-- Found pitfall or gotcha
-- User corrected you
-- Solved auth/config issue
-- Something DIDN'T work (anti-pattern)
-
-### Always Use `forge_directive` When:
-- User says "always..." → MUST
-- User says "never..." → NEVER
-- User says "I prefer..." → PREFER
-- User says "don't..." → AVOID
-
-### Always Use `check_conflict` When:
-- About to delete files/data
-- About to deploy to production
-- About to modify config files
-
-### Always Use Plan Tools When:
-- Task has 3+ steps
-- Complex feature request
-- Multi-file changes needed
-
-### Always Use Secret Tools When:
-- User shares API key, token, password
-- Need to retrieve stored credentials
 
 ## FORGE TRIGGERS
 
@@ -151,7 +122,8 @@ When something DOESN'T work, forge it as an anti-pattern.
 
 ## Response Format
 
+End every response with:
 ```
 ---
-🧠 **ekkOS_™**
+🧠 **ekkOS_™** · 📅 YYYY-MM-DD H:MM AM/PM TZ
 ```

@@ -1,5 +1,15 @@
 # Changelog - ekkOS Connect
 
+## [2.6.1] - 2025-12-30
+
+### Changed
+- Fix GitHub OAuth callback URI handling for all IDEs
+
+## [2.4.0] - 2025-12-20
+
+### Changed
+- Enhanced activity feed with clickable items and modal popup showing pattern details
+
 ## [2.3.16] - 2025-12-19
 
 ### Golden Loop Enforcement
@@ -268,3 +278,9 @@ None - fully backward compatible. MCP tools still work. Gateway proxy still work
 - Multi-IDE support (Cursor, Claude Code, Windsurf, VS Code)
 - Real-time activity feed
 - Connection wizard improvements
+
+[Unreleased]: https://github.com/ekkostech/ekkos-connect/compare/v2.6.1...HEAD
+
+[2.4.0]: https://github.com/ekkostech/ekkos-connect/compare/v2.3.16...v2.4.0
+
+[2.6.1]: https://github.com/ekkostech/ekkos-connect/compare/v2.4.0...v2.6.1

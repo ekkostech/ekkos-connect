@@ -70,8 +70,9 @@ AUTH_TOKEN=""
 USER_ID=""
 
 # 1. First try ~/.ekkos/config.json (set by VS Code extension - most portable)
+#    Prefer hookApiKey (scoped key for hooks) over apiKey (legacy)
 if [ -f "$EKKOS_CONFIG" ]; then
-  AUTH_TOKEN=$(jq -r '.apiKey // ""' "$EKKOS_CONFIG" 2>/dev/null || echo "")
+  AUTH_TOKEN=$(jq -r '.hookApiKey // .apiKey // ""' "$EKKOS_CONFIG" 2>/dev/null || echo "")
   USER_ID=$(jq -r '.userId // ""' "$EKKOS_CONFIG" 2>/dev/null || echo "")
 fi
 

@@ -147,6 +147,83 @@ const TIER_NAMES: Record<string, string> = {
   enterprise: 'Enterprise',
 };
 
+/**
+ * Verify ~/.ekkos/ directory and config.json have correct permissions (chmod 700/600)
+ * Returns true if permissions are correct or auto-fixed, false if there's an issue
+ */
+async function verifySecurityPermissions(): Promise<boolean> {
+  // Skip on Windows (no chmod support)
+  if (process.platform === 'win32') {
+    return true;
+  }
+
+  const allowDiskApiKey = vscode.workspace.getConfiguration('ekkos').get<boolean>('allowDiskApiKey', true);
+
+  // If disk key is disabled, no need to check permissions
+  if (!allowDiskApiKey) {
+    return true;
+  }
+
+  try {
+    // Check if ~/.ekkos/config.json exists
+    if (!fs.existsSync(CONFIG_PATH)) {
+      return true; // No config yet, nothing to verify
+    }
+
+    // Get current file permissions
+    const dirStats = fs.statSync(EKKOS_DIR);
+    const fileStats = fs.statSync(CONFIG_PATH);
+
+    // Extract permission bits (last 3 octal digits)
+    const dirMode = dirStats.mode & 0o777;
+    const fileMode = fileStats.mode & 0o777;
+
+    let needsFix = false;
+    let issues: string[] = [];
+
+    // Directory should be 700 (owner only)
+    if (dirMode !== 0o700) {
+      issues.push(`~/.ekkos/ has mode ${dirMode.toString(8)}, expected 700`);
+      needsFix = true;
+    }
+
+    // File should be 600 (owner read/write only)
+    if (fileMode !== 0o600) {
+      issues.push(`config.json has mode ${fileMode.toString(8)}, expected 600`);
+      needsFix = true;
+    }
+
+    if (needsFix) {
+      // Try to auto-fix
+      try {
+        fs.chmodSync(EKKOS_DIR, 0o700);
+        fs.chmodSync(CONFIG_PATH, 0o600);
+        console.log('[ekkOS Connect] Auto-fixed file permissions for ~/.ekkos/');
+        return true;
+      } catch (fixError) {
+        // Could not auto-fix, warn the user
+        console.warn('[ekkOS Connect] Could not auto-fix permissions:', issues.join(', '));
+        vscode.window.showWarningMessage(
+          `ekkOS Security: Your config file has insecure permissions. Please run: chmod 600 ~/.ekkos/config.json`,
+          'Learn More',
+          'Ignore'
+        ).then(selection => {
+          if (selection === 'Learn More') {
+            vscode.env.openExternal(vscode.Uri.parse('https://docs.ekkos.dev/security/disk-keys'));
+          }
+        });
+        return false;
+      }
+    }
+
+    return true;
+  } catch (error) {
+    // Silently handle errors (file might not exist yet)
+    console.log('[ekkOS Connect] Permission check skipped:', error);
+    return true;
+  }
+}
+
 // Globals
 let statusBarItem: vscode.StatusBarItem;
 let sidebarProvider: EkkosSidebarProvider;
@@ -215,6 +292,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Security: migrate any secrets from disk to SecretStorage (one-time cleanup)
   await migrateSecretsFromDisk();
+
+  // Security: verify ~/.ekkos/ permissions and auto-fix if possible
+  await verifySecurityPermissions();
 
   // Load existing config (async - secrets from SecretStorage)
   currentConfig = await loadConfigAsync();
@@ -840,17 +920,27 @@ async function saveConfigAsync(config: EkkosConfig): Promise<void> {
   await extensionContext.secrets.store(SECRET_KEY_API_KEY, config.apiKey);
 
   // Store config in JSON file
-  // NOTE: apiKey is included because Claude Code hooks read from this file
-  // The hooks run outside VS Code and can't access SecretStorage
-  // File permissions in ~/.ekkos/ should be restricted (chmod 700)
-  const publicConfig: EkkosPublicConfig & { apiKey?: string } = {
+  // Check if disk key storage is allowed (for CLI hooks like Cursor/Claude Code)
+  const allowDiskApiKey = vscode.workspace.getConfiguration('ekkos').get<boolean>('allowDiskApiKey', true);
+
+  // NOTE: hookApiKey is stored on disk because CLI hooks run outside VS Code
+  // and cannot access SecretStorage. This is a scoped key specifically for hooks.
+  // File permissions are restricted to owner-only (chmod 600)
+  const publicConfig: EkkosPublicConfig & { hookApiKey?: string } = {
     userId: config.userId,
     email: config.email,
     tier: config.tier,
     createdAt: config.createdAt,
     patternScope: config.patternScope,
-    apiKey: config.apiKey  // Required for Claude Code hooks
+    // Only store hookApiKey on disk if setting allows it
+    ...(allowDiskApiKey ? { hookApiKey: config.apiKey } : {})
   };
+
+  if (allowDiskApiKey) {
+    console.log('[ekkOS Connect] Hook API key stored on disk (ekkos.allowDiskApiKey=true)');
+  } else {
+    console.log('[ekkOS Connect] Disk key storage disabled - CLI hooks will not work');
+  }
 
   // Atomic write: write to temp file first, then rename
   const tempPath = CONFIG_PATH + '.tmp';
@@ -914,9 +1004,10 @@ async function startAuth(context: vscode.ExtensionContext, selectedIde?: string)
   console.log(`[ekkOS Auth] Using URI scheme: ${uriScheme} (env.uriScheme: ${vscode.env.uriScheme})`);
   const redirectUri = `${uriScheme}://ekkostech.ekkos-connect/callback`;
 
-  // Generate state for CSRF protection
-  const state = generateRandomString(32);
-  context.globalState.update('ekkos.authState', state);
+  // Generate state for CSRF protection - include IDE type for callback routing
+  const stateRandom = generateRandomString(32);
+  const state = `${uriScheme}:${stateRandom}`;
+  context.globalState.update('ekkos.authState', stateRandom); // Store just the random part for verification
 
   // Set 5-minute timeout to clear stale auth state
   if (authTimeoutHandle) {
@@ -924,7 +1015,7 @@ async function startAuth(context: vscode.ExtensionContext, selectedIde?: string)
   }
   authTimeoutHandle = setTimeout(() => {
     const currentState = context.globalState.get<string>('ekkos.authState');
-    if (currentState === state) {
+    if (currentState === stateRandom) {
       context.globalState.update('ekkos.authState', null);
       vscode.window.showWarningMessage(
         'Authentication timed out. Please try again.',
@@ -981,7 +1072,9 @@ async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionCont
     authTimeoutHandle = null;
   }
 
-  if (!token || !email || !userId || !apiKey) {
+  // Token is now optional (placeholder 'oauth-session' is used for OAuth flow)
+  // Email might be missing for some OAuth providers
+  if (!userId || !apiKey) {
     vscode.window.showErrorMessage('Authentication failed: Missing credentials');
     return;
   }
@@ -992,11 +1085,11 @@ async function handleAuthCallback(uri: vscode.Uri, context: vscode.ExtensionCont
     return;
   }
 
-  // Save config
+  // Save config - use defaults for optional fields
   const config: EkkosConfig = {
     userId,
-    email,
-    token,
+    email: email || '',
+    token: token || 'oauth-session',
     apiKey,
     tier: tier || 'free',
     createdAt: new Date().toISOString()
@@ -2107,6 +2200,10 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
         case 'openDocs':
           vscode.env.openExternal(vscode.Uri.parse('https://docs.ekkos.dev'));
           break;
+        case 'openSettings':
+          // Open extension settings focused on ekkOS configuration
+          vscode.commands.executeCommand('workbench.action.openSettings', 'ekkos');
+          break;
         case 'setupGlobal':
           vscode.commands.executeCommand('ekkos.setupGlobal');
           break;
@@ -2598,6 +2695,29 @@ class EkkosSidebarProvider implements vscode.WebviewViewProvider {
           </div>
         </div>
       </div>
+
+      ${vscode.workspace.getConfiguration('ekkos').get<boolean>('allowDiskApiKey', true) ? `
+      <!-- Security Notice: Disk Key Storage -->
+      <div class="section security-notice-section">
+        <div class="security-notice" style="background: linear-gradient(135deg, rgba(234, 179, 8, 0.1), rgba(234, 179, 8, 0.05)); border: 1px solid rgba(234, 179, 8, 0.3); border-radius: 8px; padding: 12px; margin-top: 8px;">
+          <div style="display: flex; align-items: flex-start; gap: 10px;">
+            <span style="font-size: 16px;">🔐</span>
+            <div style="flex: 1;">
+              <div style="font-weight: 600; color: #eab308; font-size: 11px; margin-bottom: 4px;">Hook Key Stored on Disk</div>
+              <div style="font-size: 10px; color: rgba(255,255,255,0.7); line-height: 1.4;">
+                CLI hooks (Cursor/Claude Code) require storing a hook key in <code style="font-size: 9px; background: rgba(234,179,8,0.2); padding: 1px 4px; border-radius: 3px;">~/.ekkos/config.json</code> with chmod 600 permissions.
+                <a href="https://docs.ekkos.dev/security/disk-keys" style="color: #eab308; text-decoration: underline; margin-left: 4px;">Learn more</a>
+              </div>
+              <div style="margin-top: 6px;">
+                <button class="security-btn" data-cmd="openSettings" style="font-size: 9px; padding: 4px 8px; background: rgba(234,179,8,0.2); border: 1px solid rgba(234,179,8,0.4); border-radius: 4px; color: #eab308; cursor: pointer;">
+                  Disable in Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      ` : ''}
 
       <!-- CURRENT IDE - Prominent display -->
       <div class="section current-ide-section">

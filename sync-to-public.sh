@@ -6,7 +6,15 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMP_DIR=$(mktemp -d)
-PUBLIC_REPO="https://github.com/ekkostech/ekkos-connect.git"
+
+# Get GitHub token from main repo's remote (if available)
+GITHUB_TOKEN=$(cd "$SCRIPT_DIR" && git config --get remote.origin.url 2>/dev/null | grep -o 'github_pat_[^@]*' | head -1 || echo "")
+
+if [ -n "$GITHUB_TOKEN" ]; then
+  PUBLIC_REPO="https://${GITHUB_TOKEN}@github.com/ekkostech/ekkos-connect.git"
+else
+  PUBLIC_REPO="https://github.com/ekkostech/ekkos-connect.git"
+fi
 
 echo "📦 Syncing ekkOS_Connect to public repo..."
 

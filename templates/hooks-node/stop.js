@@ -77,11 +77,12 @@ function loadAuthToken() {
   let authToken = '';
   let userId = '';
 
-  // 1. First try ~/.ekkos/config.json
+  // 1. First try ~/.ekkos/config.json (set by VS Code extension - most portable)
+  //    Prefer hookApiKey (scoped key for hooks) over apiKey (legacy)
   if (fs.existsSync(ekkosConfig)) {
     try {
       const config = JSON.parse(fs.readFileSync(ekkosConfig, 'utf8'));
-      authToken = config.apiKey || '';
+      authToken = config.hookApiKey || config.apiKey || '';
       userId = config.userId || '';
     } catch {}
   }

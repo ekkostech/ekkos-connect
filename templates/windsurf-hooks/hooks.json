@@ -3,7 +3,7 @@
   "hooks": {
     "beforeSubmitPrompt": [
       {
-        "command": "./.codeium/windsurf/hooks/ekkos-before-submit.sh"
+        "command": "./.windsurf/hooks/before-submit-prompt.sh"
       }
     ]
   }

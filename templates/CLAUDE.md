@@ -17,7 +17,7 @@ This is YOUR cognitive memory. It makes you:
 ## MANDATORY RULES (NOT OPTIONAL)
 
 ### RULE 1: RETRIEVE BEFORE ANSWERING
-Before answering ANY technical question, call `search_memory` first.
+Before answering ANY technical question, call `ekkOS_Search` first.
 Do not skip this. Do not assume you know the answer.
 
 ### RULE 2: ACKNOWLEDGE ALL RETRIEVED PATTERNS (PatternGuard)
@@ -41,70 +41,77 @@ When patterns are retrieved, you MUST acknowledge EVERY pattern - either use it 
 ```
 
 ### RULE 3: FORGE WHAT YOU LEARN
-When you fix a bug, get corrected, or learn something new, call `forge_pattern` immediately.
+When you fix a bug, get corrected, or learn something new, call `ekkOS_Forge` immediately.
 
 ### RULE 4: FAILURES ARE VALUABLE
 When something DOES NOT work, forge it as an anti-pattern.
 
 ---
 
-## MCP Tools (28 Total)
+## MCP Tools (31 Total)
 
 ### Core Memory Tools
 | Tool | Description |
 |------|-------------|
-| `search_memory` | 🔴 REQUIRED: Search all 11 layers before answering |
-| `get_context` | Get relevant context for a task |
-| `capture_event` | Capture memory events |
-| `forge_pattern` | 🔴 REQUIRED: Create pattern from solution |
-| `forge_directive` | 🔴 REQUIRED: Create MUST/NEVER/PREFER/AVOID rules |
-| `record_outcome` | Track if pattern worked or failed |
-| `detect_usage` | 🔴 REQUIRED: Auto-detect which patterns were used |
-| `session_summary` | 🔴 REQUIRED: Get summary of MCP activity |
-| `check_conflict` | 🔴 REQUIRED: Check for conflicts before destructive actions |
-| `recall_conversation` | Recall past conversations by time |
-| `search_codebase` | Search project code embeddings |
-| `get_memory_stats` | Get statistics for all layers |
-| `track_application` | Track when pattern is applied |
+| `ekkOS_Search` | 🔴 REQUIRED: Search all 11 layers before answering |
+| `ekkOS_Context` | Get relevant context for a task |
+| `ekkOS_Capture` | Capture memory events |
+| `ekkOS_Forge` | 🔴 REQUIRED: Create pattern from solution |
+| `ekkOS_Directive` | 🔴 REQUIRED: Create MUST/NEVER/PREFER/AVOID rules |
+| `ekkOS_Outcome` | Track if pattern worked or failed |
+| `ekkOS_Detect` | 🔴 REQUIRED: Auto-detect which patterns were used |
+| `ekkOS_Summary` | 🔴 REQUIRED: Get summary of MCP activity |
+| `ekkOS_Conflict` | 🔴 REQUIRED: Check for conflicts before destructive actions |
+| `ekkOS_Recall` | Recall past conversations by time |
+| `ekkOS_Codebase` | Search project code embeddings |
+| `ekkOS_Stats` | Get statistics for all layers |
+| `ekkOS_Track` | Track when pattern is applied |
+| `ekkOS_Reflect` | Analyze response for improvement opportunities |
+
+### Schema Awareness Tools
+| Tool | Description |
+|------|-------------|
+| `ekkOS_IndexSchema` | Index database schemas (Supabase, Prisma, TypeScript) |
+| `ekkOS_GetSchema` | Get schema for a specific table/type |
 
 ### Portability Tools
 | Tool | Description |
 |------|-------------|
-| `export_memory` | Export your patterns, directives, plans as portable JSON backup |
-| `import_memory` | Import memory from backup (auto-deduplication) |
+| `ekkOS_Export` | Export your patterns, directives, plans as portable JSON backup |
+| `ekkOS_Import` | Import memory from backup (auto-deduplication) |
 
 ### Plan Management
 | Tool | Description |
 |------|-------------|
-| `create_plan` | Create structured task plan |
-| `list_plans` | List user's plans |
-| `update_plan_status` | Update plan status |
-| `update_plan_step` | Mark step complete/incomplete |
-| `generate_plan_llm` | AI-generate plan from context |
-| `save_plan_template` | Save plan as reusable template |
-| `list_plan_templates` | List available templates |
-| `create_plan_from_template` | Create plan from template |
+| `ekkOS_Plan` | Create structured task plan |
+| `ekkOS_Plans` | List user's plans |
+| `ekkOS_PlanStatus` | Update plan status |
+| `ekkOS_PlanStep` | Mark step complete/incomplete |
+| `ekkOS_Generate` | AI-generate plan from context |
+| `ekkOS_SaveTemplate` | Save plan as reusable template |
+| `ekkOS_Templates` | List available templates |
+| `ekkOS_FromTemplate` | Create plan from template |
 
 ### Secrets Management (Layer 11)
 | Tool | Description |
 |------|-------------|
-| `store_secret` | Encrypt and store sensitive data (AES-256-GCM) |
-| `get_secret` | Retrieve and decrypt a secret |
-| `list_secrets` | List secrets metadata (no values) |
-| `delete_secret` | Permanently delete a secret |
-| `rotate_secret` | Update secret with new value |
+| `ekkOS_StoreSecret` | Encrypt and store sensitive data (AES-256-GCM) |
+| `ekkOS_GetSecret` | Retrieve and decrypt a secret |
+| `ekkOS_ListSecrets` | List secrets metadata (no values) |
+| `ekkOS_DeleteSecret` | Permanently delete a secret |
+| `ekkOS_RotateSecret` | Update secret with new value |
 
 ---
 
 ## Proactive Tool Triggers (MEMORIZE THESE)
 
-### Always Use `search_memory` When:
+### Always Use `ekkOS_Search` When:
 - User asks technical question
 - User mentions past discussion
 - Topic involves architecture, config, or debugging
 - You're about to make a decision
 
-### Always Use `forge_pattern` When:
+### Always Use `ekkOS_Forge` When:
 - Fixed a bug (especially non-obvious)
 - Discovered better approach
 - Found pitfall or gotcha
@@ -113,13 +120,13 @@ When something DOES NOT work, forge it as an anti-pattern.
 - Made architectural decision
 - Something DIDN'T work (anti-pattern)
 
-### Always Use `forge_directive` When:
+### Always Use `ekkOS_Directive` When:
 - User says "always..." → type: MUST
 - User says "never..." → type: NEVER
 - User says "I prefer..." → type: PREFER
 - User says "don't..." or "avoid..." → type: AVOID
 
-### Always Use `check_conflict` When:
+### Always Use `ekkOS_Conflict` When:
 - About to delete files/data
 - About to deploy to production
 - About to modify config files
@@ -159,7 +166,7 @@ When something DOES NOT work, forge it as an anti-pattern.
 ## FORGE TRIGGERS
 
 ### forge_pattern (Layer 4)
-Call `forge_pattern` when:
+Call `ekkOS_Forge` when:
 - Fixed bug (especially non-obvious)
 - Discovered better approach
 - Found pitfall or gotcha
@@ -172,7 +179,7 @@ Call `forge_pattern` when:
 - Learned correct API usage
 
 ### forge_directive (Layer 9)
-Call `forge_directive` when user says:
+Call `ekkOS_Directive` when user says:
 - "always..." → type: MUST
 - "never..." → type: NEVER
 - "I prefer..." → type: PREFER
@@ -192,15 +199,15 @@ Call `forge_directive` when user says:
 
 ## Quick Reference
 
-- Technical question → `search_memory` first
+- Technical question → `ekkOS_Search` first
 - Patterns retrieved → SELECT or SKIP each one
-- Problem solved → `forge_pattern`
-- User preference → `forge_directive`
-- Need to recall → `recall_conversation`
-- Destructive action → `check_conflict` first
-- Store credentials → `store_secret`
-- Backup your memory → `export_memory`
-- Restore from backup → `import_memory`
+- Problem solved → `ekkOS_Forge`
+- User preference → `ekkOS_Directive`
+- Need to recall → `ekkOS_Recall`
+- Destructive action → `ekkOS_Conflict` first
+- Store credentials → `ekkOS_StoreSecret`
+- Backup your memory → `ekkOS_Export`
+- Restore from backup → `ekkOS_Import`
 
 ## Documentation
 

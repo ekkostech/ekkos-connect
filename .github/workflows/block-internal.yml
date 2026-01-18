@@ -1,0 +1,100 @@
+name: Block Internal Files
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-internal-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for internal files
+        run: |
+          echo "Checking for internal files that should not be public..."
+
+          BLOCKED_PATTERNS=(
+            # Publishing scripts
+            "publish-to-marketplace.sh"
+            "publish-to-openvsx.sh"
+            "publish-with-pat.mjs"
+            "sync-to-public.sh"
+
+            # Internal scripts
+            "scripts/pre-publish-check.sh"
+            "scripts/validate-templates.sh"
+            "scripts/build-templates.js"
+
+            # Tests (internal)
+            "tests/"
+
+            # Vercel config
+            ".vercel/"
+
+            # Admin plugins
+            "templates/claude-plugins-admin/"
+
+            # Internal templates
+            "templates/plan-template.md"
+            "templates/spec-template.md"
+
+            # Internal docs patterns
+            "PUBLISHING_GUIDE.md"
+            "CREATE_PAT.md"
+            "VERIFY_PAT.md"
+            "CHECK_PUBLISHER.md"
+            "VERSIONING.md"
+            "UPDATE_LOGO.md"
+
+            # Plans and proposals
+            "docs/PLANS/"
+            "PROPOSALS.md"
+            "AGENT_TEAM_PROPOSALS.md"
+
+            # Env files (should never be committed)
+            ".env.local"
+            ".env.production"
+            ".env.vercel"
+          )
+
+          FOUND_INTERNAL=0
+
+          for pattern in "${BLOCKED_PATTERNS[@]}"; do
+            if find . -path "./.git" -prune -o -path "*${pattern}*" -print 2>/dev/null | grep -q .; then
+              echo "❌ BLOCKED: Found internal file matching: $pattern"
+              find . -path "./.git" -prune -o -path "*${pattern}*" -print 2>/dev/null | head -5
+              FOUND_INTERNAL=1
+            fi
+          done
+
+          if [ $FOUND_INTERNAL -eq 1 ]; then
+            echo ""
+            echo "============================================"
+            echo "❌ PUSH REJECTED: Internal files detected!"
+            echo "============================================"
+            echo "These files should not be in the public repo."
+            echo "Use scripts/sync-public.sh to sync safely."
+            exit 1
+          fi
+
+          echo "✅ No internal files found. Safe to push."
+
+      - name: Check for secrets patterns
+        run: |
+          echo "Scanning for secret patterns..."
+
+          # Patterns that indicate secrets (not the regex validators in hooks)
+          if grep -rE "(sk-[a-zA-Z0-9]{20,}['\"]|github_pat_[A-Za-z0-9_]{30,}|ovsxp_[a-f0-9-]{36}|eyJhbGciOi[A-Za-z0-9+/=]{50,}|sbp_[a-zA-Z0-9]{40,}|AIza[a-zA-Z0-9_-]{35})" \
+               --include="*.ts" --include="*.js" --include="*.json" --include="*.md" --include="*.sh" --include="*.env*" \
+               . 2>/dev/null | grep -v "\.git" | grep -v "stop\.sh" | grep -v "contract\.sh"; then
+            echo ""
+            echo "============================================"
+            echo "❌ PUSH REJECTED: Potential secrets found!"
+            echo "============================================"
+            exit 1
+          fi
+
+          echo "✅ No secrets detected."

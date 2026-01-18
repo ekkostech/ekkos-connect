@@ -1,8 +1,0 @@
-{
-  "name": "ekkos-admin-frontend",
-  "description": "ADMIN ONLY: AI Frontend Developer specialized in React, Next.js, TypeScript, and Tailwind CSS. Builds UI components, pages, and handles state management.",
-  "author": {
-    "name": "ekkOS Internal",
-    "email": "dev@ekkos.dev"
-  }
-}

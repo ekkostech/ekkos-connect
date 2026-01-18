@@ -1,8 +1,0 @@
-{
-  "name": "ekkos-admin-mcp-manager",
-  "description": "ADMIN ONLY: Manage MCP server operations - restart, monitor, debug API endpoints.",
-  "author": {
-    "name": "ekkOS Internal",
-    "email": "dev@ekkos.dev"
-  }
-}

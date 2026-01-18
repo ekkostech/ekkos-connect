@@ -1,8 +1,0 @@
-{
-  "name": "ekkos-admin-tech-lead",
-  "description": "ADMIN ONLY: AI Tech Lead that orchestrates dev team agents, creates implementation plans, assigns tasks, and manages releases.",
-  "author": {
-    "name": "ekkOS Internal",
-    "email": "dev@ekkos.dev"
-  }
-}

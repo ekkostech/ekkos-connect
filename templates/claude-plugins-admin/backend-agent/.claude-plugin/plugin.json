@@ -1,8 +1,0 @@
-{
-  "name": "ekkos-admin-backend",
-  "description": "ADMIN ONLY: AI Backend Developer specialized in API development, database design, Supabase, PostgreSQL, and server-side logic.",
-  "author": {
-    "name": "ekkOS Internal",
-    "email": "dev@ekkos.dev"
-  }
-}

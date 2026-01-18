@@ -1,8 +1,0 @@
-{
-  "name": "ekkos-admin-deploy-guardian",
-  "description": "ADMIN ONLY: Deployment safety for ekkOS infrastructure. Manages Vercel projects and Railway services with pre-flight checks.",
-  "author": {
-    "name": "ekkOS Internal",
-    "email": "dev@ekkos.dev"
-  }
-}

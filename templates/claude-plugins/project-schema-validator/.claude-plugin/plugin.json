@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-project-schema-validator",
+  "description": "Validate schemas in your own projects (TypeScript types, Prisma models, GraphQL schemas). Catch field name mismatches, type errors, and schema drift before runtime.",
+  "author": {
+    "name": "ekkOS",
+    "email": "support@ekkos.dev"
+  }
+}

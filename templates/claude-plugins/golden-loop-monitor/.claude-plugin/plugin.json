@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-golden-loop-monitor",
+  "description": "Monitor and troubleshoot the Golden Loop (RETRIEVE → APPLY → MEASURE → LEARN). Ensure ekkOS is working correctly for your codebase.",
+  "author": {
+    "name": "ekkOS",
+    "email": "support@ekkos.dev"
+  }
+}

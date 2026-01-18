@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-admin-memory-monitor",
+  "description": "ADMIN ONLY: Monitor and manage the 11-layer memory system. Health checks, data integrity, performance optimization.",
+  "author": {
+    "name": "ekkOS Internal",
+    "email": "dev@ekkos.dev"
+  }
+}

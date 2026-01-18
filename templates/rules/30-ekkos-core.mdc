@@ -1,0 +1,188 @@
+---
+priority: 100
+globs: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+---
+
+# 🧠 ekkOS™ Memory Integration [CRITICAL]
+
+## Golden Loop Enforcement
+
+⚠️ MANDATORY WORKFLOW - NO EXCEPTIONS
+
+### Phase 1: RETRIEVE (⚠️ CURSOR: YOU MUST DO THIS)
+
+🔴 **FIRST THING EVERY RESPONSE**: Call `ekkOS_Search` with the user's query!
+
+```typescript
+// ALWAYS call this BEFORE doing anything else
+mcp__ekkos-memory__ekkOS_Search({
+  query: "<user's question or task>",
+  limit: 5
+})
+```
+
+Then check response for: `_ekkos_patterns`, `_ekkos_stream_message`
+
+**Why?** Cursor has no hooks. Claude Code auto-retrieves via hooks - you don't.
+You MUST manually retrieve or the Golden Loop breaks.
+
+### Phase 2: APPLY (Use Retrieved Patterns)
+
+When patterns found → Apply them (PROVEN solutions, not suggestions)
+Output: `[ekkOS_APPLY] Using pattern: "Pattern Name"`
+
+### Phase 3: MEASURE (Track Outcomes)
+
+Pattern worked? → success | Pattern failed? → failure
+Output: `[ekkOS_MEASURE] Pattern "X" outcome: success/failure`
+
+### Phase 4: LEARN (Forge New Patterns)
+
+🔴 MANDATORY: Call `forge_insight` when you solve ANY problem
+
+**When to forge**:
+
+- Fixed bug (non-obvious) → forge
+- Found better approach → forge
+- Discovered gotcha/pitfall → forge
+- User corrected you → forge
+- Solved problem (>1 attempt) → forge
+
+**Tool call**:
+
+```typescript
+mcp__ekkos-memory__forge_insight({
+  title: "Clear Title",
+  problem: "What failed?",
+  solution: "How you fixed it",
+  tags: ["tech", "tags"],
+});
+```
+
+Output: `[ekkOS_LEARN] Forged: "Pattern Title"`
+
+### Phase 5: CAPTURE (Cursor: Limited)
+
+⚠️ **Cursor limitation**: No automatic capture like Claude Code hooks.
+Conversations are captured when MCP tools are called (search_memory, forge_insight).
+For full capture, use Claude Code or the ekkOS dashboard.
+
+## MCP Tools (31 Total - YOU call these)
+
+### 🔴 MANDATORY - Use Proactively
+
+| Tool | Trigger | Description |
+|------|---------|-------------|
+| `ekkOS_Search` | Before ANY technical question | Search all 11 memory layers |
+| `ekkOS_Forge` | When you fix bug, learn, get corrected | Create pattern from solution |
+| `ekkOS_Directive` | User says "always/never/prefer/avoid" | Create MUST/NEVER/PREFER/AVOID rules |
+| `ekkOS_Outcome` | Pattern worked or failed | Track success/failure |
+| `ekkOS_Detect` | After responding | Auto-detect patterns used |
+| `ekkOS_Summary` | Show MCP activity | Get activity summary |
+| `ekkOS_Conflict` | Before destructive action | Check for conflicts |
+| `ekkOS_Reflect` | Analyze response quality | Find improvement opportunities |
+
+### 📚 Recall & Context
+
+| Tool | Description |
+|------|-------------|
+| `ekkOS_Recall` | "What did we discuss yesterday?" |
+| `ekkOS_Context` | Get task-specific context |
+| `ekkOS_Codebase` | Find code patterns in project |
+| `ekkOS_Capture` | Manual event capture |
+| `ekkOS_Track` | Track pattern application |
+| `ekkOS_Stats` | Memory layer statistics |
+
+### 📊 Schema Awareness
+
+| Tool | Description |
+|------|-------------|
+| `ekkOS_IndexSchema` | Index database schemas (Supabase/Prisma/TS) |
+| `ekkOS_GetSchema` | Get schema for a specific table/type |
+
+### 📋 Plan Management
+
+| Tool | Description |
+|------|-------------|
+| `ekkOS_Plan` | Create structured plan |
+| `ekkOS_Plans` | List user's plans |
+| `ekkOS_PlanStatus` | Change plan state |
+| `ekkOS_PlanStep` | Mark step complete |
+| `ekkOS_Generate` | AI-generate plan |
+| `ekkOS_SaveTemplate` | Save as reusable template |
+| `ekkOS_Templates` | List templates |
+| `ekkOS_FromTemplate` | Create from template |
+
+### 🔐 Secrets Management
+
+| Tool | Description |
+|------|-------------|
+| `ekkOS_StoreSecret` | Encrypt and store credentials |
+| `ekkOS_GetSecret` | Retrieve and decrypt |
+| `ekkOS_ListSecrets` | List metadata (no values) |
+| `ekkOS_DeleteSecret` | Permanently delete |
+| `ekkOS_RotateSecret` | Update with new value |
+
+### 💾 Portability
+
+| Tool | Description |
+|------|-------------|
+| `ekkOS_Export` | Backup patterns, directives, plans |
+| `ekkOS_Import` | Restore from backup |
+
+## Proactive Tool Triggers
+
+### Always Use `ekkOS_Search` When:
+- User asks technical question
+- User mentions past discussion
+- Topic involves architecture, config, debugging
+- You're about to make a decision
+
+### Always Use `ekkOS_Forge` When:
+- Fixed bug (especially non-obvious)
+- Discovered better approach
+- Found pitfall or gotcha
+- User corrected you
+- Made architectural decision
+- Something DIDN'T work (anti-pattern)
+
+### Always Use `ekkOS_Directive` When:
+- User says "always..." → MUST
+- User says "never..." → NEVER
+- User says "I prefer..." → PREFER
+- User says "don't..." → AVOID
+
+### Always Use `ekkOS_Conflict` When:
+- About to delete files/data
+- About to deploy to production
+- About to modify config files
+
+## Enforcement
+
+⚠️ Violating Golden Loop = System failure
+Every conversation MUST follow: RETRIEVE → APPLY → MEASURE → LEARN → CAPTURE
+
+---
+
+## 🔴 MANDATORY RESPONSE FORMAT (NO EXCEPTIONS)
+
+**Every response MUST end with a timestamp footer:**
+
+```
+---
+🧠 **ekkOS_™** · 📅 YYYY-MM-DD H:MM AM/PM TZ
+```
+
+**Example:**
+```
+---
+🧠 **ekkOS_™** · 📅 2025-12-08 2:30 PM PST
+```
+
+**Why this matters:**
+- Timestamps track when patterns were applied
+- 3-Judge evaluations need temporal context
+- Future agents can trace learning timeline
+- Golden Loop metrics require time-based correlation
+
+**⚠️ MISSING TIMESTAMP = INCOMPLETE LOOP = SYSTEM DEGRADATION**

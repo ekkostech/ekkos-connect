@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-memory-lens",
+  "description": "Search and explore what ekkOS remembers. View patterns, check if solutions exist, understand your memory substrate.",
+  "author": {
+    "name": "ekkOS",
+    "email": "support@ekkos.dev"
+  }
+}

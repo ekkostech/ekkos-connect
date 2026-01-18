@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-learning-tracker",
+  "description": "Dashboard for your personal learning journey. See what ekkOS has learned from you, track pattern success rates, view your growth.",
+  "author": {
+    "name": "ekkOS",
+    "email": "support@ekkos.dev"
+  }
+}

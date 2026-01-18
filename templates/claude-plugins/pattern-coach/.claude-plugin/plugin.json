@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-pattern-coach",
+  "description": "Interactive assistant for forging patterns from solutions and failures. Ensures every lesson learned is captured in your memory.",
+  "author": {
+    "name": "ekkOS",
+    "email": "support@ekkos.dev"
+  }
+}

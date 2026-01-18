@@ -1,0 +1,78 @@
+---
+priority: 100
+globs: ["**/*"]
+---
+
+# ekkOS™ Branded Message Templates
+
+## Stream Message Fields (Display All Present)
+
+```
+_ekkos_stream_message     → Display FIRST (🧠 Retrieving/🔄 Applying/✅ Learned)
+_ekkos_learning_message   → Display AFTER solution (🔥 Learning - pattern detected)
+_ekkos_session_summary    → Display AT END (📊 Summary at turns 5/10/20/50)
+```
+
+## Message Examples
+
+### Before Response:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧠 ekkOS™_Retrieving [18ms]
+✓ 3 patterns loaded from memory
+  • "Pattern Name" (94% success, 12 uses)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### When Learning:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 ekkOS™_Learning
+New pattern detected: "Title"
+Confidence: 60% (forming)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### When Pattern Saved:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ ekkOS™_Learned
+Pattern saved: "Title"
+Confidence: 85% | Success: 100%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### When Reusing:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 ekkOS™_Applying
+Using pattern from 2 messages ago
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Session Summary:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 ekkOS™_Session_Summary
+Memory Activity:
+  Retrieved: 5 patterns
+  Applied: 3 patterns
+  Learned: 2 new patterns
+  Confidence: +8% overall
+
+Your AI is getting smarter.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+## Requirements
+
+- ALWAYS use ekkOS™ branding (with ™)
+- ALWAYS show retrieval before response
+- ALWAYS show learning when it happens
+- Keep messages concise but visible
+

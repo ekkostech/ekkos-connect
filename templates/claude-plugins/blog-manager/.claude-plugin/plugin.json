@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-blog-manager",
+  "description": "Editorial enforcement system for ekkOS blog. Create, research, and publish thought leadership content with built-in tone checking, claims auditing, and credibility guardrails. Promotion with class, not marketing fluff.",
+  "author": {
+    "name": "ekkOS",
+    "email": "support@ekkos.dev"
+  }
+}

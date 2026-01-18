@@ -1,0 +1,237 @@
+{
+  "name": "ekkos-connect",
+  "displayName": "ekkOS_™ - Universal AI Memory Gateway",
+  "description": "Universal AI Memory Gateway - One-click setup for persistent memory across Cursor, Claude Code, VS Code, Windsurf, Codex with real-time diagnostics and automatic pattern injection via Chat Participant",
+  "version": "2.12.20",
+  "publisher": "ekkostech",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ekkostech/ekkos-connect"
+  },
+  "homepage": "https://github.com/ekkostech/ekkos-connect#readme",
+  "bugs": {
+    "url": "https://github.com/ekkostech/ekkos-connect/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "icon": "resources/icon.png",
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "ekkos",
+    "memory",
+    "ai",
+    "mcp",
+    "cursor",
+    "claude",
+    "windsurf",
+    "codex",
+    "openai"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onUri",
+    "onChatParticipant:ekkos-connect.memory"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "ekkos-connect.memory",
+        "name": "ekkos",
+        "fullName": "ekkOS Memory",
+        "description": "AI with persistent memory across sessions",
+        "isSticky": false,
+        "disambiguation": [
+          {
+            "category": "technical_questions",
+            "description": "User asks technical questions, wants to debug code, needs architectural guidance, or wants the AI to remember past solutions and decisions.",
+            "examples": [
+              "How do I fix this authentication error?",
+              "What's the best way to structure this component?",
+              "Remember this pattern for future reference",
+              "Have we solved this before?",
+              "What did we decide about the database schema?"
+            ]
+          }
+        ]
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ekkos-connect",
+          "title": "ekkOS_Connect",
+          "icon": "resources/ekkos-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ekkos-connect": [
+        {
+          "type": "webview",
+          "id": "ekkosConnect",
+          "name": "Connect"
+        },
+        {
+          "type": "webview",
+          "id": "ekkosSessionContext",
+          "name": "Session Context"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ekkos.connect",
+        "title": "ekkOS: Connect Account"
+      },
+      {
+        "command": "ekkos.openSidebar",
+        "title": "ekkOS: Open Sidebar"
+      },
+      {
+        "command": "ekkos.disconnect",
+        "title": "ekkOS: Disconnect Account"
+      },
+      {
+        "command": "ekkos.deployMcp",
+        "title": "ekkOS: Deploy MCP Config to All IDEs"
+      },
+      {
+        "command": "ekkos.deployInstructions",
+        "title": "ekkOS: Deploy AI Instructions to Project"
+      },
+      {
+        "command": "ekkos.deployPlugins",
+        "title": "ekkOS: Deploy Custom Agents to Claude Code"
+      },
+      {
+        "command": "ekkos.openDashboard",
+        "title": "ekkOS: Open Dashboard"
+      },
+      {
+        "command": "ekkos.refreshStatus",
+        "title": "ekkOS: Refresh Status"
+      },
+      {
+        "command": "ekkos.setupRules",
+        "title": "ekkOS: Setup Rules for Current Project",
+        "icon": "$(file-add)"
+      },
+      {
+        "command": "ekkos.setupGlobal",
+        "title": "ekkOS: Setup Global Hooks (One-Time, All Projects)",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "ekkos.validateTemplates",
+        "title": "ekkOS: Validate Templates",
+        "icon": "$(check)"
+      },
+      {
+        "command": "ekkos.showWindowsGuide",
+        "title": "ekkOS: Windows Setup Guide",
+        "icon": "$(question)",
+        "when": "isWindows"
+      },
+      {
+        "command": "ekkos.showWindowsQuickFix",
+        "title": "ekkOS: Windows Quick Fix",
+        "icon": "$(tools)",
+        "when": "isWindows"
+      },
+      {
+        "command": "ekkos.showMacOSGuide",
+        "title": "ekkOS: macOS Setup Guide",
+        "icon": "$(question)",
+        "when": "isMac"
+      },
+      {
+        "command": "ekkos.showLinuxGuide",
+        "title": "ekkOS: Linux Setup Guide",
+        "icon": "$(question)",
+        "when": "isLinux"
+      },
+      {
+        "command": "ekkos.windowsSetupWizard",
+        "title": "ekkOS: Setup Wizard (Recommended)",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "ekkos.runPreflight",
+        "title": "ekkOS: Run System Check",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "ekkos.showSessionContext",
+        "title": "ekkOS: Show Session Context"
+      },
+      {
+        "command": "ekkos.refreshSessionContext",
+        "title": "ekkOS: Refresh Session Context"
+      },
+      {
+        "command": "ekkos.focusActiveSession",
+        "title": "ekkOS: Focus Active Session"
+      }
+    ],
+    "configuration": {
+      "title": "ekkOS Connect",
+      "properties": {
+        "ekkos.apiUrl": {
+          "type": "string",
+          "default": "https://mcp.ekkos.dev",
+          "description": "ekkOS API URL"
+        },
+        "ekkos.platformUrl": {
+          "type": "string",
+          "default": "https://platform.ekkos.dev",
+          "description": "ekkOS Platform URL"
+        },
+        "ekkos.autoDeployMcp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically deploy MCP config after authentication"
+        },
+        "ekkos.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show ekkOS status in status bar"
+        },
+        "ekkos.autoSetup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically set up ekkOS rules when opening new workspaces"
+        },
+        "ekkos.allowDiskApiKey": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Store API key on disk for CLI hooks (Cursor/Claude Code). When enabled, a scoped hook key is stored in `~/.ekkos/config.json` with strict file permissions (chmod 600). Disable for maximum security if you don't use external hooks."
+        }
+      }
+    },
+    "uriHandler": {
+      "ekkos-connect": {
+        "pattern": "*://ekkostech.ekkos-connect/callback"
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "prepackage": "node scripts/build-templates.js prepackage",
+    "postpackage": "node scripts/build-templates.js postpackage",
+    "package": "npm run prepackage && vsce package && npm run postpackage"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.0.0"
+  }
+}

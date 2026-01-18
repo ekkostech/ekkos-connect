@@ -1,0 +1,8 @@
+{
+  "name": "ekkos-admin-autonomous-agent",
+  "description": "ADMIN ONLY: Autonomous agent that monitors ekkOS infrastructure 24/7 and intelligently uses admin plugins to maintain system health.",
+  "author": {
+    "name": "ekkOS Internal",
+    "email": "dev@ekkos.dev"
+  }
+}

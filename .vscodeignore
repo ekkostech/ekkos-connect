@@ -1,0 +1,103 @@
+# Development files
+.vscode/**
+.vscode-test/**
+src/**
+tests/**
+
+# Build configs
+**/tsconfig.json
+tsconfig.json
+.gitignore
+.yarnrc
+
+# Documentation
+vsc-extension-quickstart.md
+
+# Source maps
+**/*.map
+**/*.ts
+
+# Dependencies
+node_modules/**
+
+# Packaged extensions (don't ship .vsix in .vsix)
+*.vsix
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+
+# Secrets - CRITICAL: Never ship these
+.env
+.env.local
+.env.production
+.env.*.local
+credentials.json
+secrets.json
+*.pem
+*.key
+
+# User config - don't ship development configs
+.ekkos/
+config.local.json
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

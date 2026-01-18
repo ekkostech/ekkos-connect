@@ -1,4 +1,4 @@
-name: Block Internal Files
+name: Block Internal Files & Secrets
 
 on:
   push:
@@ -7,94 +7,216 @@ on:
     branches: [main]
 
 jobs:
-  check-internal-files:
+  security-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for internal files
+      - name: Block internal files
         run: |
-          echo "Checking for internal files that should not be public..."
+          echo "🔍 Checking for internal files..."
 
-          BLOCKED_PATTERNS=(
-            # Publishing scripts
+          BLOCKED_FILES=(
+            # Publishing/deployment scripts
             "publish-to-marketplace.sh"
             "publish-to-openvsx.sh"
             "publish-with-pat.mjs"
             "sync-to-public.sh"
+            "sync-public.sh"
 
-            # Internal scripts
+            # Build/internal scripts
             "scripts/pre-publish-check.sh"
             "scripts/validate-templates.sh"
             "scripts/build-templates.js"
 
-            # Tests (internal)
+            # Internal folders
             "tests/"
-
-            # Vercel config
             ".vercel/"
-
-            # Admin plugins
             "templates/claude-plugins-admin/"
+            "docs/PLANS/"
+            "backups/"
+            "archive/"
 
-            # Internal templates
-            "templates/plan-template.md"
-            "templates/spec-template.md"
-
-            # Internal docs patterns
+            # Internal docs
             "PUBLISHING_GUIDE.md"
             "CREATE_PAT.md"
             "VERIFY_PAT.md"
             "CHECK_PUBLISHER.md"
             "VERSIONING.md"
             "UPDATE_LOGO.md"
-
-            # Plans and proposals
-            "docs/PLANS/"
-            "PROPOSALS.md"
+            "QUICK_PUBLISH.md"
             "AGENT_TEAM_PROPOSALS.md"
+            "PHASE2_COMPLETION.md"
+            "PLUGIN_PROPOSALS.md"
+            "plan-template.md"
+            "spec-template.md"
 
-            # Env files (should never be committed)
+            # Env files (NEVER commit these)
             ".env.local"
             ".env.production"
             ".env.vercel"
+            ".env.development"
+            ".env.staging"
+            ".env.*.local"
           )
 
-          FOUND_INTERNAL=0
-
-          for pattern in "${BLOCKED_PATTERNS[@]}"; do
-            if find . -path "./.git" -prune -o -path "*${pattern}*" -print 2>/dev/null | grep -q .; then
-              echo "❌ BLOCKED: Found internal file matching: $pattern"
-              find . -path "./.git" -prune -o -path "*${pattern}*" -print 2>/dev/null | head -5
-              FOUND_INTERNAL=1
+          FOUND=0
+          for pattern in "${BLOCKED_FILES[@]}"; do
+            matches=$(find . -path "./.git" -prune -o -path "*${pattern}*" -print 2>/dev/null | grep -v "^$" || true)
+            if [ -n "$matches" ]; then
+              echo "❌ BLOCKED: $pattern"
+              echo "$matches" | head -3
+              FOUND=1
             fi
           done
 
-          if [ $FOUND_INTERNAL -eq 1 ]; then
+          if [ $FOUND -eq 1 ]; then
             echo ""
-            echo "============================================"
-            echo "❌ PUSH REJECTED: Internal files detected!"
-            echo "============================================"
-            echo "These files should not be in the public repo."
-            echo "Use scripts/sync-public.sh to sync safely."
+            echo "=========================================="
+            echo "❌ PUSH REJECTED: Internal files detected"
+            echo "=========================================="
+            echo "Use scripts/sync-public.sh for safe syncing"
             exit 1
           fi
+          echo "✅ No internal files found"
 
-          echo "✅ No internal files found. Safe to push."
-
-      - name: Check for secrets patterns
+      - name: Block secrets and credentials
         run: |
-          echo "Scanning for secret patterns..."
+          echo "🔐 Scanning for secrets and credentials..."
 
-          # Patterns that indicate secrets (not the regex validators in hooks)
-          if grep -rE "(sk-[a-zA-Z0-9]{20,}['\"]|github_pat_[A-Za-z0-9_]{30,}|ovsxp_[a-f0-9-]{36}|eyJhbGciOi[A-Za-z0-9+/=]{50,}|sbp_[a-zA-Z0-9]{40,}|AIza[a-zA-Z0-9_-]{35})" \
-               --include="*.ts" --include="*.js" --include="*.json" --include="*.md" --include="*.sh" --include="*.env*" \
-               . 2>/dev/null | grep -v "\.git" | grep -v "stop\.sh" | grep -v "contract\.sh"; then
+          # Comprehensive secret patterns (from GitHub's supported list + common patterns)
+          # Note: Excludes hook files that contain detection regex patterns
+
+          SECRET_PATTERNS=(
+            # API Keys with prefixes
+            'sk-[a-zA-Z0-9]{20,}'           # OpenAI
+            'sk_live_[a-zA-Z0-9]{24,}'      # Stripe live
+            'sk_test_[a-zA-Z0-9]{24,}'      # Stripe test
+            'rk_live_[a-zA-Z0-9]{24,}'      # Stripe restricted
+            'pk_live_[a-zA-Z0-9]{24,}'      # Stripe publishable
+            'xai-[a-zA-Z0-9]{60,}'          # XAI/Grok
+            'AIza[a-zA-Z0-9_-]{35}'         # Google API
+            'ya29\.[a-zA-Z0-9_-]{50,}'      # Google OAuth
+
+            # GitHub tokens
+            'ghp_[a-zA-Z0-9]{36}'           # Personal access token
+            'gho_[a-zA-Z0-9]{36}'           # OAuth token
+            'ghu_[a-zA-Z0-9]{36}'           # User token
+            'ghs_[a-zA-Z0-9]{36}'           # Server token
+            'ghr_[a-zA-Z0-9]{36}'           # Refresh token
+            'github_pat_[a-zA-Z0-9_]{30,}'  # Fine-grained PAT
+
+            # Cloud providers
+            'AKIA[A-Z0-9]{16}'              # AWS Access Key
+            'ABIA[A-Z0-9]{16}'              # AWS STS
+            'ACCA[A-Z0-9]{16}'              # AWS Account
+            'ASIA[A-Z0-9]{16}'              # AWS Temp
+
+            # Supabase
+            'sbp_[a-zA-Z0-9]{40,}'          # Supabase PAT
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[a-zA-Z0-9_-]{50,}'  # Supabase JWT
+
+            # Vercel
+            'vercel_[a-zA-Z0-9]{24,}'       # Vercel token
+
+            # Other services
+            'ovsxp_[a-f0-9-]{36}'           # Open VSX
+            'npm_[a-zA-Z0-9]{36}'           # NPM
+            'pypi-[a-zA-Z0-9_-]{50,}'       # PyPI
+            'slack-[a-zA-Z0-9]{24,}'        # Slack
+            'xox[baprs]-[a-zA-Z0-9-]{10,}'  # Slack tokens
+            'sq0[a-z]{3}-[a-zA-Z0-9_-]{22,}'  # Square
+            'twilio_[a-zA-Z0-9]{32}'        # Twilio
+            'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'  # SendGrid
+            'key-[a-zA-Z0-9]{32}'           # Mailgun
+
+            # Private keys (headers)
+            'BEGIN RSA PRIVATE KEY'
+            'BEGIN DSA PRIVATE KEY'
+            'BEGIN EC PRIVATE KEY'
+            'BEGIN OPENSSH PRIVATE KEY'
+            'BEGIN PGP PRIVATE KEY'
+            'BEGIN PRIVATE KEY'
+          )
+
+          FOUND=0
+          for pattern in "${SECRET_PATTERNS[@]}"; do
+            # Search but exclude hook files that contain detection patterns
+            matches=$(grep -rE "$pattern" \
+              --include="*.ts" --include="*.js" --include="*.json" \
+              --include="*.md" --include="*.yaml" --include="*.yml" \
+              --include="*.env*" --include="*.config.*" \
+              . 2>/dev/null | \
+              grep -v "\.git" | \
+              grep -v "stop\.sh" | \
+              grep -v "contract\.sh" | \
+              grep -v "block-internal\.yml" | \
+              grep -v "validate-templates" | \
+              head -5 || true)
+
+            if [ -n "$matches" ]; then
+              echo "❌ SECRET DETECTED: Pattern $pattern"
+              echo "$matches" | sed 's/\(.\{80\}\).*/\1.../'
+              FOUND=1
+            fi
+          done
+
+          if [ $FOUND -eq 1 ]; then
             echo ""
-            echo "============================================"
-            echo "❌ PUSH REJECTED: Potential secrets found!"
-            echo "============================================"
+            echo "=========================================="
+            echo "❌ PUSH REJECTED: Secrets detected!"
+            echo "=========================================="
+            echo "Remove secrets and use environment variables"
             exit 1
           fi
+          echo "✅ No secrets detected"
 
-          echo "✅ No secrets detected."
+      - name: Block sensitive file types
+        run: |
+          echo "📁 Checking for sensitive file types..."
+
+          BLOCKED_EXTENSIONS=(
+            "*.pem"
+            "*.key"
+            "*.p12"
+            "*.pfx"
+            "*.jks"
+            "*.keystore"
+            "*.env.local"
+            "*.env.production"
+            "credentials.json"
+            "secrets.json"
+            "service-account*.json"
+            "*_rsa"
+            "*_dsa"
+            "*_ed25519"
+            "*_ecdsa"
+            "id_rsa"
+            "id_dsa"
+          )
+
+          FOUND=0
+          for pattern in "${BLOCKED_EXTENSIONS[@]}"; do
+            matches=$(find . -path "./.git" -prune -o -name "$pattern" -print 2>/dev/null | grep -v "^$" || true)
+            if [ -n "$matches" ]; then
+              echo "❌ BLOCKED FILE TYPE: $pattern"
+              echo "$matches"
+              FOUND=1
+            fi
+          done
+
+          if [ $FOUND -eq 1 ]; then
+            echo ""
+            echo "=========================================="
+            echo "❌ PUSH REJECTED: Sensitive files detected"
+            echo "=========================================="
+            exit 1
+          fi
+          echo "✅ No sensitive file types found"
+
+      - name: Success
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "✅ All security checks passed!"
+          echo "=========================================="
